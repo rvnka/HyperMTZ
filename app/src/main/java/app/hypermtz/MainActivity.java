@@ -72,8 +72,8 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        DynamicColors.applyToActivityIfAvailable(this);
         super.onCreate(savedInstanceState);
+        DynamicColors.applyToActivityIfAvailable(this);
         setContentView(R.layout.activity_main);
 
         MaterialToolbar toolbar = findViewById(R.id.toolbar);
