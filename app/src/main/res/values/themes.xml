@@ -12,7 +12,7 @@
         Window chrome colors are left transparent so the system draws them in
         the appropriate surface color automatically.
     -->
-    <style name="Base.Theme.HyperMTZ" parent="Theme.Material3.DynamicColors.DayNight">
+    <style name="Base.Theme.HyperMTZ" parent="Theme.Material3.DayNight.NoActionBar">
         <!-- Brand seed — fallback palette for pre-Android 12 devices. -->
         <item name="colorPrimary">@color/brand_primary</item>
         <item name="colorPrimaryContainer">@color/brand_primary_container</item>
