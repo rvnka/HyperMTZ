@@ -40,7 +40,7 @@
             android:layout_height="wrap_content"
             android:layout_marginBottom="16dp"
             app:boxBackgroundMode="outline"
-            app:hintText="@string/file_apply_name_hint">
+            app:hint="@string/file_apply_name_hint">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/et_theme_name"
