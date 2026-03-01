@@ -87,11 +87,7 @@ public class ThemeInterceptService extends AccessibilityService {
         filter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
 
         // MIUI ThemeManager is an external app, so this MUST be EXPORTED
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(themeCheckReceiver, filter, Context.RECEIVER_EXPORTED);
-        } else {
-            registerReceiver(themeCheckReceiver, filter);
-        }
+        ContextCompat.registerReceiver(this, themeCheckReceiver, filter, ContextCompat.RECEIVER_EXPORTED);
         receiverRegistered = true;
     }
 
