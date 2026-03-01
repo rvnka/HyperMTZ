@@ -195,18 +195,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * Fixes UnspecifiedRegisterReceiverFlag error for Android 14+.
-     * Internal broadcasts must explicitly state they are NOT_EXPORTED.
+     * Fix for UnspecifiedRegisterReceiverFlag:
+     * On API 33+, internal broadcasts must specify RECEIVER_NOT_EXPORTED.
      */
     private void registerServiceStateReceiver() {
         IntentFilter filter = new IntentFilter(ThemeInterceptService.ACTION_STATE_CHANGED);
-        
-        // Use Build.VERSION_CODES constants for better readability
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // API 33+ requires the Exported/Not_Exported flag
             registerReceiver(serviceStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
-            // Older versions do not support the flag in this method signature
             registerReceiver(serviceStateReceiver, filter);
         }
     }
