@@ -199,14 +199,12 @@ public class MainActivity extends AppCompatActivity {
      * Internal broadcasts must explicitly state they are NOT_EXPORTED.
      */
     private void registerServiceStateReceiver() {
-        IntentFilter filter = new IntentFilter(ThemeInterceptService.ACTION_STATE_CHANGED);
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(action_Service_UP);
         
-        // Use Build.VERSION_CODES constants for better readability
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // API 33+ requires the Exported/Not_Exported flag
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(serviceStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
-            // Older versions do not support the flag in this method signature
             registerReceiver(serviceStateReceiver, filter);
         }
     }
