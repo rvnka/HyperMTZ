@@ -1,0 +1,24 @@
+[versions]
+agp             = "8.9.1"
+compileSdk      = "36"
+minSdk          = "28"
+targetSdk       = "36"
+core            = "1.16.0"
+appcompat       = "1.7.0"
+material        = "1.12.0"
+activity        = "1.10.1"
+lifecycle       = "2.9.0"
+shizuku         = "13.1.5"
+
+[libraries]
+androidx-core        = { group = "androidx.core",               name = "core",                version.ref = "core"      }
+androidx-appcompat   = { group = "androidx.appcompat",          name = "appcompat",           version.ref = "appcompat" }
+material             = { group = "com.google.android.material", name = "material",            version.ref = "material"  }
+androidx-activity    = { group = "androidx.activity",           name = "activity",            version.ref = "activity"  }
+lifecycle-viewmodel  = { group = "androidx.lifecycle",          name = "lifecycle-viewmodel", version.ref = "lifecycle" }
+lifecycle-livedata   = { group = "androidx.lifecycle",          name = "lifecycle-livedata",  version.ref = "lifecycle" }
+shizuku-api          = { group = "dev.rikka.shizuku",           name = "api",                 version.ref = "shizuku"   }
+shizuku-provider     = { group = "dev.rikka.shizuku",           name = "provider",            version.ref = "shizuku"   }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }

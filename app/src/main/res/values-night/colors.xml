@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Night-mode brand seed colors. Used as M3 fallback palette on
+        Android < 12 in dark mode. Dynamic Color overrides these on Android 12+.
+    -->
+    <color name="brand_primary">#B3C5FF</color>
+    <color name="brand_primary_container">#2B4678</color>
+    <color name="brand_on_primary">#0E2553</color>
+    <color name="brand_on_primary_container">#D9E2FF</color>
+    <!-- Adaptive launcher icon background (dark). -->
+    <color name="background_primary">#1A1C1E</color>
+</resources>

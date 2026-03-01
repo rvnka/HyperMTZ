@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Brand seed colors. These serve as the M3 fallback palette on devices that
+        do not support Dynamic Color (Android < 12). On Android 12+ the Dynamic
+        Colors overlay replaces colorPrimary / colorPrimaryContainer / etc. with
+        wallpaper-derived values, so these are only used as defaults.
+
+        Do NOT reference these colors directly from layouts; always use the
+        corresponding ?attr/ color-role token (colorPrimary, colorSurface, etc.)
+        so that both dynamic and night-mode theming work correctly.
+    -->
+    <!-- Adaptive launcher icon background. -->
+    <color name="background_primary">#FEFBFF</color>
+
+    <color name="brand_primary">#475D92</color>
+    <color name="brand_primary_container">#D9E2FF</color>
+    <color name="brand_on_primary">#FFFFFF</color>
+    <color name="brand_on_primary_container">#001849</color>
+</resources>

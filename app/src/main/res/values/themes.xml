@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Base theme: extends Material 3 DynamicColors (wallpaper palette on Android 12+,
+        brand seed palette as fallback on older devices).
+
+        Only brand seed colors are set here; they act as the fallback palette
+        for devices that do not support dynamic color. On Android 12+ the entire
+        color role set is overridden by the Dynamic Colors overlay at runtime via
+        DynamicColors.applyToActivitiesIfAvailable() — see MainActivity.onCreate().
+
+        Window chrome colors are left transparent so the system draws them in
+        the appropriate surface color automatically.
+    -->
+    <style name="Base.Theme.HyperMTZ" parent="Theme.Material3.DynamicColors.DayNight">
+        <!-- Brand seed — fallback palette for pre-Android 12 devices. -->
+        <item name="colorPrimary">@color/brand_primary</item>
+        <item name="colorPrimaryContainer">@color/brand_primary_container</item>
+        <item name="colorOnPrimary">@color/brand_on_primary</item>
+        <item name="colorOnPrimaryContainer">@color/brand_on_primary_container</item>
+
+        <!-- Transparent bars; color drawn by the window background. -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+
+        <!-- Light icon tint; overridden in values-night. -->
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <style name="Theme.HyperMTZ" parent="Base.Theme.HyperMTZ" />
+</resources>

@@ -1,0 +1,97 @@
+name: Build APK
+
+on:
+  push:
+    branches: ["main", "master", "dev"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION:  "17"
+  JAVA_DISTRIB:  "temurin"
+  GRADLE_OPTS:   "-Dorg.gradle.daemon=false -Dorg.gradle.parallel=true"
+
+jobs:
+
+  build-debug:
+    name: Debug – all-arch + universal
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Android Build Setup
+        uses: ./.github/actions/android-setup
+        with:
+          java-version:       ${{ env.JAVA_VERSION }}
+          java-distribution:  ${{ env.JAVA_DISTRIB }}
+
+      - name: Lint
+        run: ./gradlew lint --stacktrace
+
+      - name: Assemble Debug
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload Debug APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name:           debug-apks-${{ github.sha }}
+          path:           app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+
+
+  build-release:
+    name: Release – all-arch + universal (signed)
+    runs-on: ubuntu-24.04
+    needs: build-debug
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Android Build Setup
+        uses: ./.github/actions/android-setup
+        with:
+          java-version:       ${{ env.JAVA_VERSION }}
+          java-distribution:  ${{ env.JAVA_DISTRIB }}
+
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > release.jks
+          echo "KEYSTORE_PATH=$PWD/release.jks" >> $GITHUB_ENV
+
+      - name: Assemble Release
+        env:
+          KEYSTORE_PATH:     ${{ env.KEYSTORE_PATH }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS:         ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD:      ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Upload Release APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name:           release-apks-${{ github.ref_name }}
+          path:           app/build/outputs/apk/release/*.apk
+          retention-days: 90
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: app/build/outputs/apk/release/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup
+        if: always()
+        run: rm -f release.jks
