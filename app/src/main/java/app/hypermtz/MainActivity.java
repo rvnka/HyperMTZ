@@ -106,6 +106,10 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         viewModel.refresh();
+        // Mirror the reference-app pattern: proactively attempt Shizuku connection
+        // every resume. This handles cases where Shizuku became available after
+        // the app started, or the UserService crashed and needs rebinding.
+        viewModel.retryShizuku();
 
         if (!ThemeInterceptService.isRunning(this)) {
             FragmentManager fm = getSupportFragmentManager();

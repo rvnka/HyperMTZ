@@ -133,7 +133,7 @@ public class MainViewModel extends AndroidViewModel
 
     @Override
     public void onPermissionGranted() {
-        // ShizukuServiceManager binds automatically after permission is granted.
+        // ShizukuServiceManager handles binding automatically after grant.
     }
 
     @Override
@@ -143,6 +143,12 @@ public class MainViewModel extends AndroidViewModel
                 ? R.string.shizuku_permission_permanent_denial
                 : R.string.shizuku_permission_denied);
         _toastEvent.postValue(new Event<>(msg));
+    }
+
+    @Override
+    public void onShizukuUnavailable() {
+        // Shizuku is not running — update UI silently, no toast spam.
+        _shizukuConnected.postValue(false);
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -156,6 +162,16 @@ public class MainViewModel extends AndroidViewModel
     /** Returns true if the Shizuku UserService binder is bound and alive. */
     public boolean isShizukuAvailable() {
         return shizukuManager.isAvailable();
+    }
+
+    /**
+     * Proactively retry the Shizuku connection.
+     * Call from Activity.onResume() — mirrors the reference-app pattern of
+     * checking Shizuku state on every resume instead of relying solely on
+     * the sticky binder-received listener.
+     */
+    public void retryShizuku() {
+        shizukuManager.retryConnection();
     }
 
     /**
