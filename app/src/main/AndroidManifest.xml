@@ -28,16 +28,10 @@
             </intent-filter>
         </activity>
 
-        <!--
-            ThemeInterceptService is an AccessibilityService that intercepts MIUI
-            theme authorization broadcasts to prevent authorization-expiry prompts.
-        -->
         <service
             android:name=".service.ThemeInterceptService"
-            android:directBootAware="true"
-            android:enabled="true"
-            android:exported="true"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
@@ -46,21 +40,6 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
-        <!--
-            PrivilegedService runs inside the Shizuku server process (:shizuku).
-            Restricted to holders of the Shizuku API permission.
-        -->
-        <service
-            android:name=".service.PrivilegedService"
-            android:enabled="true"
-            android:exported="true"
-            android:permission="moe.shizuku.manager.permission.API_V23"
-            android:process=":shizuku" />
-
-        <!--
-            ShizukuProvider makes this app discoverable by the Shizuku manager
-            so it can bind the privileged service.
-        -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
@@ -69,7 +48,6 @@
             android:multiprocess="false"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
-        <!-- Declare Shizuku API v3 support so the Shizuku manager can detect this app. -->
         <meta-data
             android:name="moe.shizuku.client.V3_SUPPORT"
             android:value="true" />
