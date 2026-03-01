@@ -44,31 +44,31 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="20dp"
-            android:gravity="end">
+            android:orientation="vertical"
+            android:layout_marginTop="20dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_open_accessibility"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/btn_open_accessibility" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_open_battery_settings"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/btn_open_battery" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btn_dismiss"
                 style="@style/Widget.Material3.Button.TextButton"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
                 android:text="@string/btn_dismiss" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btn_open_battery_settings"
-                style="@style/Widget.Material3.Button.TextButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="4dp"
-                android:text="@string/btn_open_battery" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btn_open_accessibility"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="4dp"
-                android:text="@string/btn_open_accessibility" />
         </LinearLayout>
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>
