@@ -23,9 +23,7 @@ import rikka.shizuku.Shizuku;
  *     onServiceConnected, so every onResume retryConnection() would re-call bind.
  *  2. {@code onPermissionGranted()} only fires on a real grant transition, not every
  *     retryConnection() that finds permission already held.
- *  3. Uses {@code Shizuku.peekUserService()} to detect already-running UserService
- *     before binding (avoids unnecessary restarts).
- *  4. Exposes {@link ShizukuState} enum for granular UI feedback.
+ *  3. Exposes {@link ShizukuState} enum for granular UI feedback.
  */
 public final class ShizukuServiceManager {
 
@@ -212,16 +210,6 @@ public final class ShizukuServiceManager {
         if (bound || binding) {
             Log.d(TAG, "bindUserService: already bound or binding");
             return;
-        }
-        // Optimisation: if the UserService process is already alive from a
-        // prior session, re-bind to it without restarting.
-        try {
-            IBinder existing = Shizuku.peekUserService(serviceArgs, null);
-            if (existing != null && existing.isBinderAlive()) {
-                Log.d(TAG, "bindUserService: UserService already running, re-binding");
-            }
-        } catch (Exception ignored) {
-            // peekUserService may be unavailable on older Shizuku — safe to ignore
         }
         try {
             binding = true;
