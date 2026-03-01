@@ -170,6 +170,10 @@ public class MainActivity extends AppCompatActivity {
                     tvShizukuStatus.setText(R.string.shizuku_connecting);
                     tvShizukuDetail.setText(R.string.shizuku_detail_connecting);
                     break;
+                case PERMISSION_DENIED:
+                    tvShizukuStatus.setText(R.string.shizuku_permission_denied);
+                    tvShizukuDetail.setText(R.string.shizuku_detail_permission_denied);
+                    break;
                 case PERMISSION_NEEDED:
                     tvShizukuStatus.setText(R.string.shizuku_permission_needed);
                     tvShizukuDetail.setText(R.string.shizuku_detail_permission_needed);
@@ -227,11 +231,17 @@ public class MainActivity extends AppCompatActivity {
                             Uri.parse("https://shizuku.rikka.app/")));
                 } catch (Exception ignored) {}
             }
-        } else if (state == ShizukuServiceManager.ShizukuState.PERMISSION_NEEDED) {
-            // retryShizuku() resets the binding flag and calls checkAndBind(),
-            // which now ALWAYS calls requestPermission() when perm is not granted,
-            // regardless of shouldShowRequestPermissionRationale().
-            viewModel.retryShizuku();
+        } else if (state == ShizukuServiceManager.ShizukuState.PERMISSION_NEEDED
+                || state == ShizukuServiceManager.ShizukuState.PERMISSION_DENIED) {
+            if (state == ShizukuServiceManager.ShizukuState.PERMISSION_DENIED) {
+                // Permanent denial — open Shizuku app so the user can re-grant manually.
+                Intent launch = getPackageManager()
+                        .getLaunchIntentForPackage("moe.shizuku.privileged.api");
+                if (launch != null) startActivity(launch);
+            } else {
+                // Normal denial or first time — retry triggers requestPermission().
+                viewModel.retryShizuku();
+            }
         }
     }
 

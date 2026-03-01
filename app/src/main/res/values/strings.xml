@@ -25,6 +25,7 @@
     <string name="shizuku_detail_connecting">Binding to privileged service…</string>
     <string name="shizuku_detail_permission_needed">Tap to grant permission in Shizuku</string>
     <string name="shizuku_detail_unavailable">Shizuku not running — tap to open</string>
+    <string name="shizuku_detail_permission_denied">Open Shizuku app to re-grant permission</string>
 
     <!-- Main actions -->
     <string name="btn_install_theme">Install Theme</string>
