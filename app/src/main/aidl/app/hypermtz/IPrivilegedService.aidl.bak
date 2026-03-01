@@ -43,5 +43,5 @@ interface IPrivilegedService {
 
     // Shizuku reserved: called before a newer version of this service is bound.
     // Must clean up resources and call System.exit() before returning.
-    void destroy() = 16777114;
+    void destroy() = 16777115;
 }
