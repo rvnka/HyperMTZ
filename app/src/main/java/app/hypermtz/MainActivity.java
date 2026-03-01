@@ -47,12 +47,6 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvShizukuStatus;
     private TextView tvShizukuDetail;
 
-    /**
-     * FIX: Track whether the setup guide has been shown this session.
-     * Original bug: the dialog was shown on EVERY onResume() call while the
-     * accessibility service was not running — so it would re-appear every time
-     * the user returned from Accessibility Settings without enabling the service.
-     */
     private boolean setupGuideShownThisSession = false;
 
     private final BroadcastReceiver serviceStateReceiver = new BroadcastReceiver() {
@@ -107,7 +101,6 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // Shizuku card: tap to open Shizuku app if unavailable, or retry connection
         MaterialCardView cardShizuku = findViewById(R.id.card_shizuku_status);
         cardShizuku.setOnClickListener(v -> onShizukuCardClicked());
 
@@ -124,9 +117,6 @@ public class MainActivity extends AppCompatActivity {
         viewModel.refresh();
         viewModel.retryShizuku();
 
-        // FIX: only show SetupGuideDialog once per session, not every onResume.
-        // Original: the dialog re-appeared every time the user came back from
-        // Accessibility Settings without enabling the service — very annoying.
         if (!setupGuideShownThisSession && !ThemeInterceptService.isRunning(this)) {
             setupGuideShownThisSession = true;
             FragmentManager fm = getSupportFragmentManager();
@@ -169,12 +159,6 @@ public class MainActivity extends AppCompatActivity {
                         ? R.string.service_connected
                         : R.string.service_disconnected));
 
-        // Legacy boolean observer (kept for backward compat with other observers)
-        viewModel.shizukuConnected.observe(this, connected -> {
-            // Detail text is driven by shizukuState — nothing extra needed here
-        });
-
-        // FIX: use granular ShizukuState for the Shizuku card label + detail
         viewModel.shizukuState.observe(this, state -> {
             if (state == null) return;
             switch (state) {
@@ -221,25 +205,34 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    /**
+     * Shizuku card click handler.
+     *
+     * UNAVAILABLE       → try to open Shizuku app so user can start it
+     * PERMISSION_NEEDED → force-retry (ShizukuServiceManager will call
+     *                     requestPermission() unconditionally — see fix #3)
+     * CONNECTING        → no-op, already in progress
+     * CONNECTED         → no-op
+     */
     private void onShizukuCardClicked() {
         ShizukuServiceManager.ShizukuState state = viewModel.shizukuState.getValue();
         if (state == ShizukuServiceManager.ShizukuState.UNAVAILABLE) {
-            // Try to open Shizuku app so user can start it
-            try {
-                startActivity(getPackageManager()
-                        .getLaunchIntentForPackage("moe.shizuku.privileged.api"));
-            } catch (Exception e) {
-                // Shizuku not installed — open Play Store / download page
+            Intent launch = getPackageManager()
+                    .getLaunchIntentForPackage("moe.shizuku.privileged.api");
+            if (launch != null) {
+                startActivity(launch);
+            } else {
                 try {
                     startActivity(new Intent(Intent.ACTION_VIEW,
                             Uri.parse("https://shizuku.rikka.app/")));
                 } catch (Exception ignored) {}
             }
         } else if (state == ShizukuServiceManager.ShizukuState.PERMISSION_NEEDED) {
-            // Retry to trigger the permission dialog
+            // retryShizuku() resets the binding flag and calls checkAndBind(),
+            // which now ALWAYS calls requestPermission() when perm is not granted,
+            // regardless of shouldShowRequestPermissionRationale().
             viewModel.retryShizuku();
         }
-        // CONNECTED / CONNECTING → no-op
     }
 
     private void openFilePicker() {
