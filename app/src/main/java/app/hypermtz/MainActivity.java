@@ -1,9 +1,11 @@
 package app.hypermtz;
 
+import android.Manifest;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -19,6 +21,7 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 import androidx.fragment.app.FragmentManager;
 import androidx.lifecycle.ViewModelProvider;
 
@@ -62,22 +65,18 @@ public class MainActivity extends AppCompatActivity {
     private final ActivityResultLauncher<Intent> allFilesPermissionLauncher =
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(),
                     result -> {
-                        boolean granted = Build.VERSION.SDK_INT >= 30
-                                && Environment.isExternalStorageManager();
-                        if (!granted) {
-                            Toast.makeText(this, R.string.permission_storage_denied,
-                                    Toast.LENGTH_SHORT).show();
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R 
+                                && !Environment.isExternalStorageManager()) {
+                            showPermissionDeniedToast();
                         }
                     });
 
     private final ActivityResultLauncher<String[]> storagePermissionLauncher =
             registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(),
                     results -> {
-                        boolean granted = Boolean.TRUE.equals(
-                                results.get(android.Manifest.permission.WRITE_EXTERNAL_STORAGE));
-                        if (!granted) {
-                            Toast.makeText(this, R.string.permission_storage_denied,
-                                    Toast.LENGTH_SHORT).show();
+                        Boolean granted = results.getOrDefault(Manifest.permission.WRITE_EXTERNAL_STORAGE, false);
+                        if (Boolean.FALSE.equals(granted)) {
+                            showPermissionDeniedToast();
                         }
                     });
 
@@ -195,9 +194,13 @@ public class MainActivity extends AppCompatActivity {
         showDialog(FilePickerDialogFragment.TAG, new FilePickerDialogFragment());
     }
 
+    /**
+     * Fix for UnspecifiedRegisterReceiverFlag:
+     * On API 33+, internal broadcasts must specify RECEIVER_NOT_EXPORTED.
+     */
     private void registerServiceStateReceiver() {
         IntentFilter filter = new IntentFilter(ThemeInterceptService.ACTION_STATE_CHANGED);
-        if (Build.VERSION.SDK_INT >= 33) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(serviceStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
             registerReceiver(serviceStateReceiver, filter);
@@ -205,7 +208,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void requestStoragePermissions() {
-        if (Build.VERSION.SDK_INT >= 30) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11+ All Files Access
             if (!Environment.isExternalStorageManager()) {
                 Intent intent = new Intent(
                         Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
@@ -213,14 +217,19 @@ public class MainActivity extends AppCompatActivity {
                 allFilesPermissionLauncher.launch(intent);
             }
         } else {
-            if (checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            // Legacy Storage Permissions
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                    != PackageManager.PERMISSION_GRANTED) {
                 storagePermissionLauncher.launch(new String[]{
-                        android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                        android.Manifest.permission.READ_EXTERNAL_STORAGE
+                        Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                        Manifest.permission.READ_EXTERNAL_STORAGE
                 });
             }
         }
+    }
+
+    private void showPermissionDeniedToast() {
+        Toast.makeText(this, R.string.permission_storage_denied, Toast.LENGTH_SHORT).show();
     }
 
     private void showDialog(String tag, androidx.fragment.app.DialogFragment fragment) {
