@@ -18,15 +18,11 @@ import java.util.Locale;
 
 /**
  * Accessibility service that intercepts MIUI theme authorization broadcasts.
- *
- * When MIUI's ThemeManager fires the theme-check broadcast to expire a theme
- * license, this service absorbs it at high priority before ThemeManager can
- * process it, preventing the expiry dialog from appearing.
  */
 public class ThemeInterceptService extends AccessibilityService {
 
     /** Broadcast sent to MainActivity when service state changes. */
-    public static final String ACTION_STATE_CHANGED = "app.hypermtz.action_Service_UP";
+    public static final String ACTION_STATE_CHANGED = "app.hypermtz.ACTION_STATE_CHANGED";
 
     /** MIUI theme license expiry trigger. */
     private static final String ACTION_THEME_CHECK = "miui.intent.action.CHECK_TIME_UP";
@@ -35,7 +31,6 @@ public class ThemeInterceptService extends AccessibilityService {
     public static final String KEY_CONNECTED_TIME  = "connected_time";
     public static final String KEY_INTERCEPT_TIME  = "intercept_time";
 
-    /** Avoids double-registration if onCreate is called twice on the same instance. */
     private boolean receiverRegistered = false;
 
     private static final DateTimeFormatter TIME_FMT =
@@ -51,7 +46,6 @@ public class ThemeInterceptService extends AccessibilityService {
         }
     };
 
-    /** Returns true if this service is currently enabled in Accessibility Settings. */
     public static boolean isRunning(Context context) {
         AccessibilityManager manager =
                 (AccessibilityManager) context.getSystemService(Context.ACCESSIBILITY_SERVICE);
@@ -88,12 +82,12 @@ public class ThemeInterceptService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        // No event handling needed; intercept relies on the broadcast receiver only.
+        // No event handling needed
     }
 
     @Override
     public void onInterrupt() {
-        // No active operations to cancel.
+        // No active operations to cancel
     }
 
     @Override
@@ -113,8 +107,7 @@ public class ThemeInterceptService extends AccessibilityService {
         filter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
 
         if (Build.VERSION.SDK_INT >= 33) {
-            // RECEIVER_EXPORTED is required so that MIUI's ThemeManager
-            // (a separate app) can deliver its broadcast to this service.
+            // RECEIVER_EXPORTED allows external MIUI ThemeManager to deliver broadcasts
             registerReceiver(themeCheckReceiver, filter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(themeCheckReceiver, filter);
@@ -137,7 +130,7 @@ public class ThemeInterceptService extends AccessibilityService {
 
     private void broadcastStateChanged() {
         Intent intent = new Intent(ACTION_STATE_CHANGED);
-        intent.setPackage(getPackageName());
+        intent.setPackage(getPackageName()); // Targets only this app's MainActivity
         sendBroadcast(intent);
     }
 }

@@ -127,7 +127,11 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
-        unregisterReceiver(serviceStateReceiver);
+        try {
+            unregisterReceiver(serviceStateReceiver);
+        } catch (Exception e) {
+            // Log or ignore if already unregistered
+        }
         super.onDestroy();
     }
 
@@ -200,7 +204,8 @@ public class MainActivity extends AppCompatActivity {
      */
     private void registerServiceStateReceiver() {
         IntentFilter filter = new IntentFilter();
-        filter.addAction(action_Service_UP);
+        // Fixed: Use the constant from ThemeInterceptService
+        filter.addAction(ThemeInterceptService.ACTION_STATE_CHANGED);
         
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(serviceStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
@@ -211,7 +216,6 @@ public class MainActivity extends AppCompatActivity {
 
     private void requestStoragePermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            // Android 11+ All Files Access
             if (!Environment.isExternalStorageManager()) {
                 Intent intent = new Intent(
                         Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
@@ -219,7 +223,6 @@ public class MainActivity extends AppCompatActivity {
                 allFilesPermissionLauncher.launch(intent);
             }
         } else {
-            // Legacy Storage Permissions
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
                     != PackageManager.PERMISSION_GRANTED) {
                 storagePermissionLauncher.launch(new String[]{
