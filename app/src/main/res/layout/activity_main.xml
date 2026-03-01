@@ -51,7 +51,7 @@
                         android:layout_width="40dp"
                         android:layout_height="40dp"
                         android:src="@drawable/ic_accessibility"
-                        android:tint="?attr/colorPrimary"
+                        app:tint="?attr/colorPrimary"
                         android:contentDescription="@null" />
 
                     <LinearLayout
@@ -103,7 +103,7 @@
                         android:layout_width="40dp"
                         android:layout_height="40dp"
                         android:src="@drawable/ic_shizuku"
-                        android:tint="?attr/colorPrimary"
+                        app:tint="?attr/colorPrimary"
                         android:contentDescription="@null" />
 
                     <LinearLayout
