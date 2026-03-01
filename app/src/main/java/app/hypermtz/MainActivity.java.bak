@@ -193,7 +193,12 @@ public class MainActivity extends AppCompatActivity {
         // FIXED: Accessing the constant via the Service class
         filter.addAction(ThemeInterceptService.ACTION_STATE_CHANGED);
         
-        ContextCompat.registerReceiver(this, serviceStateReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        // FIXED: Explicitly providing export flags for Android 14+ compatibility
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(serviceStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(serviceStateReceiver, filter);
+        }
     }
 
     private void requestStoragePermissions() {
