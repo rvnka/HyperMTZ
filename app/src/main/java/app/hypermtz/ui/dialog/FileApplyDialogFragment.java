@@ -36,8 +36,8 @@ public class FileApplyDialogFragment extends DialogFragment {
     /**
      * Theme destination directories, tried in order.
      *
-     * Primary:  /data/system/theme/compatibility-v12  (MIUI 12+)
-     * Fallback: ThemeManager snapshot dir             (older MIUI)
+     * Primary:  /data/system/theme/compatibility-v12  (MIUI 12+ / HyperOS)
+     * Fallback: ThemeManager snapshot dir             (older MIUI / HyperOS)
      */
     private static final String DEST_PRIMARY  = "/data/system/theme/compatibility-v12/";
     private static final String DEST_FALLBACK =
@@ -71,7 +71,6 @@ public class FileApplyDialogFragment extends DialogFragment {
         tvFileName.setText(sourceFile.getName());
         etName.setText(stripExtension(sourceFile.getName()));
 
-        // Obtain the shared ViewModel so state survives dialog recreation.
         MainViewModel viewModel = new ViewModelProvider(requireActivity())
                 .get(MainViewModel.class);
 
@@ -116,7 +115,12 @@ public class FileApplyDialogFragment extends DialogFragment {
         viewModel.setThemeCopyRunning(true);
 
         executor.submit(() -> {
-            String destination = chooseDest(themeName);
+            // BUG FIX: chooseDest() previously called new File(path).isDirectory() from
+            // the app process, which always returned false for /data/system/theme/ because
+            // the app lacks read permission there — so it always fell back to sdcard.
+            // Now we delegate the directory check to the privileged service (IPC call),
+            // which runs as ADB/root and can actually stat the system path.
+            String destination = chooseDest(service, themeName);
             boolean success;
             try {
                 success = service.copyFile(sourceFile.getAbsolutePath(), destination);
@@ -151,13 +155,22 @@ public class FileApplyDialogFragment extends DialogFragment {
     }
 
     /**
-     * Prefers the MIUI 12+ system path; falls back to the ThemeManager
-     * snapshot dir if the primary directory doesn't exist.
+     * Determines the destination path.
+     *
+     * BUG FIX: The original version called new File(DEST_PRIMARY).isDirectory() from
+     * the unprivileged app process. Since the app cannot read /data/system/theme/,
+     * isDirectory() always returned false, and themes were always installed to the
+     * sdcard fallback path even on devices where the primary path exists.
+     *
+     * Now delegates to service.isDirectory() which runs with ADB/root privileges.
      */
-    private static String chooseDest(String themeName) {
-        File primaryDir = new File(DEST_PRIMARY);
-        if (primaryDir.isDirectory()) {
-            return DEST_PRIMARY + themeName + ".mtz";
+    private static String chooseDest(IPrivilegedService service, String themeName) {
+        try {
+            if (service.isDirectory(DEST_PRIMARY)) {
+                return DEST_PRIMARY + themeName + ".mtz";
+            }
+        } catch (RemoteException ignored) {
+            // If the IPC fails, fall through to sdcard fallback
         }
         return DEST_FALLBACK + themeName + ".mtz";
     }

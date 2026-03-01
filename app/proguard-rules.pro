@@ -1,5 +1,4 @@
 # ── Crash symbolication ───────────────────────────────────────────────────────
-# Preserve source file names and line numbers so stack traces are readable.
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
 
@@ -15,14 +14,19 @@
 
 # PrivilegedService is instantiated reflectively by the Shizuku server process.
 # Both the default and Context constructors must survive R8.
+# FIX: also keep the class name itself (not just constructors) so Shizuku can
+# find it by the ComponentName stored in UserServiceArgs — R8 would otherwise
+# rename the class and break bindUserService().
 -keep class app.hypermtz.service.PrivilegedService {
     public <init>();
     public <init>(android.content.Context);
 }
 
+# ShizukuServiceManager.ShizukuState enum — keep for LiveData observers that
+# switch on the enum value; R8 can prune enum entries if they appear unused.
+-keepclassmembers enum app.hypermtz.util.ShizukuServiceManager$ShizukuState { *; }
+
 # ── Android framework components ──────────────────────────────────────────────
-# AGP keeps Activity/Service/etc. via aapt, but explicit rules guard against
-# edge cases when the class is only referenced from the manifest.
 -keep public class * extends android.accessibilityservice.AccessibilityService
 
 # ── R fields ─────────────────────────────────────────────────────────────────

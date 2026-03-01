@@ -10,11 +10,21 @@
     <string name="theme_not_installed">No theme installed yet</string>
     <string name="copying_theme_files">Copying theme files…</string>
     <string name="label_shizuku_status">Shizuku</string>
-    <string name="shizuku_connected">Connected</string>
-    <string name="shizuku_disconnected">Not connected</string>
     <string name="label_last_intercept">Last intercepted</string>
     <string name="label_connected_at">Connected at</string>
     <string name="label_never">—</string>
+
+    <!-- Shizuku states (granular) -->
+    <string name="shizuku_connected">Connected</string>
+    <string name="shizuku_connecting">Connecting…</string>
+    <string name="shizuku_permission_needed">Permission required</string>
+    <string name="shizuku_disconnected">Not available</string>
+
+    <!-- Shizuku detail lines shown below the state label -->
+    <string name="shizuku_detail_connected">Privileged service active</string>
+    <string name="shizuku_detail_connecting">Binding to privileged service…</string>
+    <string name="shizuku_detail_permission_needed">Tap to grant permission in Shizuku</string>
+    <string name="shizuku_detail_unavailable">Shizuku not running — tap to open</string>
 
     <!-- Main actions -->
     <string name="btn_install_theme">Install Theme</string>

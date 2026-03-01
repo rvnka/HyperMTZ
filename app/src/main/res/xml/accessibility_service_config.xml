@@ -1,11 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    FIX: Reduced accessibilityEventTypes from typeAllMask to typeWindowStateChanged.
+
+    Original used typeAllMask, which caused the AccessibilityService to receive
+    EVERY accessibility event on the device (window changes, view clicks, text
+    input, scroll events, etc.). This caused unnecessary battery drain and CPU
+    work since HyperMTZ's service does not consume any accessibility events —
+    it only uses the AccessibilityService to stay alive and intercept broadcasts.
+
+    canRetrieveWindowContent and canRequestFilterKeyEvents were also enabled
+    unnecessarily, triggering elevated permission warnings on Android 13+ and
+    potentially causing Google Play / system security concerns.
+
+    Minimal config: typeWindowStateChanged is the lowest-impact event type that
+    keeps the service reliably active across all MIUI/HyperOS versions.
+-->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/accessibility_service_description"
-    android:accessibilityEventTypes="typeAllMask"
+    android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:notificationTimeout="100"
-    android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagRequestEnhancedWebAccessibility"
-    android:canRetrieveWindowContent="true"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="false"
     android:canRequestTouchExplorationMode="false"
-    android:canRequestFilterKeyEvents="true"
+    android:canRequestFilterKeyEvents="false"
     android:settingsActivity="app.hypermtz.MainActivity" />

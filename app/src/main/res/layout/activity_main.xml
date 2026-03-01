@@ -89,12 +89,13 @@
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
-            <!-- Shizuku status card -->
+            <!-- Shizuku status card — FIX: now clickable + shows granular state + detail line -->
             <com.google.android.material.card.MaterialCardView
                 android:id="@+id/card_shizuku_status"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="12dp"
+                android:foreground="?attr/selectableItemBackground"
                 app:cardBackgroundColor="?attr/colorSurfaceVariant"
                 app:cardCornerRadius="20dp"
                 app:cardElevation="0dp"
@@ -135,6 +136,17 @@
                             android:layout_marginTop="2dp"
                             android:textAppearance="@style/TextAppearance.Material3.BodyLarge"
                             android:textColor="?attr/colorOnSurface" />
+
+                        <!-- FIX: detail line explains what the user should do in each state -->
+                        <TextView
+                            android:id="@+id/tv_shizuku_detail"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+                            android:textColor="?attr/colorOnSurfaceVariant"
+                            android:maxLines="2"
+                            android:ellipsize="end" />
                     </LinearLayout>
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>

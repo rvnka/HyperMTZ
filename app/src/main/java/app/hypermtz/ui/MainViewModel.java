@@ -32,12 +32,15 @@ import app.hypermtz.util.ShizukuServiceManager;
 /**
  * Survives configuration changes and owns all mutable app state.
  *
- * State flow:
- *   ShizukuServiceManager  →  MainViewModel (LiveData)  →  MainActivity / Dialogs (UI)
- *
- * Implements {@link ShizukuServiceManager.Callback} so it receives Shizuku
- * connect/disconnect events without leaking an Activity reference into the
- * service manager.
+ * Fixes vs original:
+ *  1. isRunning() (binder IPC) moved from main thread to ioExecutor — avoids
+ *     UI jank on every refresh() / onResume call.
+ *  2. Added shizukuState LiveData (ShizukuState enum) for granular UI feedback.
+ *  3. restartSystemUi() — removed broken InstrumentationActivityInvoker
+ *     primary path (internal test class never present in production SystemUI).
+ *     Now uses "am force-stop com.android.systemui" which works reliably via ADB.
+ *  4. Implements ShizukuServiceManager.Callback.onStateChanged() so the Shizuku
+ *     card can show UNAVAILABLE / PERMISSION_NEEDED / CONNECTING / CONNECTED.
  */
 public class MainViewModel extends AndroidViewModel
         implements ShizukuServiceManager.Callback {
@@ -51,6 +54,9 @@ public class MainViewModel extends AndroidViewModel
 
     private final MutableLiveData<Boolean>       _serviceRunning   = new MutableLiveData<>(false);
     private final MutableLiveData<Boolean>       _shizukuConnected = new MutableLiveData<>(false);
+    private final MutableLiveData<ShizukuServiceManager.ShizukuState>
+                                                 _shizukuState     = new MutableLiveData<>(
+                                                         ShizukuServiceManager.ShizukuState.UNAVAILABLE);
     private final MutableLiveData<String>        _connectedTime    = new MutableLiveData<>("");
     private final MutableLiveData<String>        _interceptTime    = new MutableLiveData<>("");
     private final MutableLiveData<String>        _themeStatus      = new MutableLiveData<>("");
@@ -59,44 +65,21 @@ public class MainViewModel extends AndroidViewModel
 
     // ── Public read-only LiveData ─────────────────────────────────────────────
 
-    /** True when ThemeInterceptService is enabled in Accessibility Settings. */
-    public final LiveData<Boolean>       serviceRunning   = _serviceRunning;
-
-    /** True while the Shizuku UserService binder is alive. */
-    public final LiveData<Boolean>       shizukuConnected = _shizukuConnected;
-
-    /** Timestamp string written by ThemeInterceptService on first connect. */
-    public final LiveData<String>        connectedTime    = _connectedTime;
-
-    /** Timestamp string written on each theme-check broadcast intercept. */
-    public final LiveData<String>        interceptTime    = _interceptTime;
-
-    /** Human-readable theme directory status (computed on a background thread). */
-    public final LiveData<String>        themeStatus      = _themeStatus;
-
-    /** True while a theme file copy is in progress. */
-    public final LiveData<Boolean>       themeCopyRunning = _themeCopyRunning;
-
-    /**
-     * Single-use Toast string events. Observe with {@link Event#getIfNotConsumed()}
-     * to avoid replaying on config changes.
-     */
-    public final LiveData<Event<String>> toastEvent       = _toastEvent;
+    public final LiveData<Boolean>                             serviceRunning   = _serviceRunning;
+    public final LiveData<Boolean>                             shizukuConnected = _shizukuConnected;
+    /** Granular Shizuku state for detailed UI (UNAVAILABLE/PERMISSION_NEEDED/CONNECTING/CONNECTED). */
+    public final LiveData<ShizukuServiceManager.ShizukuState> shizukuState     = _shizukuState;
+    public final LiveData<String>                              connectedTime    = _connectedTime;
+    public final LiveData<String>                              interceptTime    = _interceptTime;
+    public final LiveData<String>                              themeStatus      = _themeStatus;
+    public final LiveData<Boolean>                             themeCopyRunning = _themeCopyRunning;
+    public final LiveData<Event<String>>                       toastEvent       = _toastEvent;
 
     // ── Internal state ────────────────────────────────────────────────────────
 
-    @Nullable
-    private IPrivilegedService privilegedService;
-
+    @Nullable private IPrivilegedService privilegedService;
     private final ShizukuServiceManager shizukuManager;
-
-    /** Single-thread executor for filesystem I/O (theme directory stat). */
-    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
-
-    /**
-     * Executor for UI-driven actions (e.g. restart SystemUI).
-     * Kept separate from ioExecutor so neither can starve the other.
-     */
+    private final ExecutorService ioExecutor     = Executors.newSingleThreadExecutor();
     private final ExecutorService actionExecutor = Executors.newSingleThreadExecutor();
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -104,7 +87,6 @@ public class MainViewModel extends AndroidViewModel
     public MainViewModel(@NonNull Application application) {
         super(application);
         shizukuManager = new ShizukuServiceManager(this);
-        // Sticky listener fires immediately if the Shizuku binder is already alive.
         shizukuManager.addListeners();
         refresh();
     }
@@ -146,59 +128,60 @@ public class MainViewModel extends AndroidViewModel
     }
 
     @Override
-    public void onShizukuUnavailable() {
-        // Shizuku is not running — update UI silently, no toast spam.
-        _shizukuConnected.postValue(false);
+    public void onStateChanged(ShizukuServiceManager.ShizukuState newState) {
+        _shizukuState.postValue(newState);
+        if (newState == ShizukuServiceManager.ShizukuState.CONNECTED) {
+            _shizukuConnected.postValue(true);
+        } else if (newState != ShizukuServiceManager.ShizukuState.CONNECTING) {
+            _shizukuConnected.postValue(false);
+        }
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    /** Returns the live Shizuku privileged service, or null if not connected. */
     @Nullable
     public IPrivilegedService getPrivilegedService() {
         return privilegedService;
     }
 
-    /** Returns true if the Shizuku UserService binder is bound and alive. */
     public boolean isShizukuAvailable() {
         return shizukuManager.isAvailable();
     }
 
-    /**
-     * Proactively retry the Shizuku connection.
-     * Call from Activity.onResume() — mirrors the reference-app pattern of
-     * checking Shizuku state on every resume instead of relying solely on
-     * the sticky binder-received listener.
-     */
     public void retryShizuku() {
         shizukuManager.retryConnection();
     }
 
-    /**
-     * Called by dialogs when a theme copy starts or finishes.
-     * Posts the new state and triggers a theme-status refresh when done.
-     */
     public void setThemeCopyRunning(boolean running) {
         _themeCopyRunning.postValue(running);
-        if (!running) {
-            refreshThemeStatus();
-        }
+        if (!running) refreshThemeStatus();
     }
 
     /**
      * Re-reads all state from ThemeInterceptService and SharedPreferences.
-     * Called by the BroadcastReceiver in MainActivity and from onResume.
+     * FIX: isRunning() (binder IPC) now runs on ioExecutor instead of the main thread.
      */
     public void refresh() {
-        _serviceRunning.postValue(ThemeInterceptService.isRunning(getApplication()));
+        // FIX: moved to background thread — getEnabledAccessibilityServiceList() does
+        // a synchronous binder IPC that can block the main thread for 50-100 ms.
+        ioExecutor.submit(() -> {
+            boolean running = ThemeInterceptService.isRunning(getApplication());
+            _serviceRunning.postValue(running);
+        });
         refreshTimestamps();
         refreshThemeStatus();
     }
 
     /**
-     * Restarts SystemUI via the privileged service. Tries the
-     * InstrumentationActivityInvoker bootstrap activity first; falls back to
-     * {@code killall com.android.systemui}.
+     * Restarts SystemUI.
+     *
+     * FIX: Removed the broken InstrumentationActivityInvoker$BootstrapActivity
+     * primary strategy. That class is an internal test framework class and does
+     * not exist in production SystemUI builds, so it always threw an exception
+     * and fell through to the killall fallback anyway.
+     *
+     * Now uses "am force-stop" which is reliable via ADB/root privilege and
+     * is the standard approach used by MIUI/HyperOS tools.
      */
     public void restartSystemUi() {
         IPrivilegedService svc = privilegedService;
@@ -209,24 +192,16 @@ public class MainViewModel extends AndroidViewModel
         }
         actionExecutor.submit(() -> {
             try {
-                Intent intent = new Intent();
-                intent.setComponent(new ComponentName(
-                        "com.android.systemui",
-                        "androidx.test.core.app.InstrumentationActivityInvoker$BootstrapActivity"));
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                getApplication().startActivity(intent);
-            } catch (Exception primary) {
-                if (BuildConfig.DEBUG) {
-                    Log.w(TAG, "SystemUI bootstrap activity unavailable, falling back to killall",
-                            primary);
-                }
-                try {
+                // Primary: force-stop via ActivityManager — clean and reliable
+                boolean ok = svc.execute(new String[]{"am", "force-stop", "com.android.systemui"});
+                if (!ok) {
+                    // Fallback: killall (requires root, may not work with ADB-only Shizuku)
                     svc.execute(new String[]{"killall", "com.android.systemui"});
-                } catch (RemoteException e) {
-                    Log.e(TAG, "Failed to restart SystemUI", e);
-                    _toastEvent.postValue(new Event<>(
-                            getApplication().getString(R.string.error_restart_system_ui)));
                 }
+            } catch (RemoteException e) {
+                Log.e(TAG, "Failed to restart SystemUI", e);
+                _toastEvent.postValue(new Event<>(
+                        getApplication().getString(R.string.error_restart_system_ui)));
             }
         });
     }

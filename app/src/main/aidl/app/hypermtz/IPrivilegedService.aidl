@@ -2,7 +2,7 @@
 // elevated ADB-shell or root privileges depending on how Shizuku was started.
 //
 // Transaction code 16777115 is the Shizuku-reserved slot for the destroy
-// callback. It must not be removed or renumbered.
+// callback. Use 16777114 in the AIDL file (Shizuku API docs §UserService).
 package app.hypermtz;
 
 interface IPrivilegedService {
@@ -40,6 +40,12 @@ interface IPrivilegedService {
     // Enables an accessibility service by appending componentName
     // ("package/ClassName") to the secure setting.
     boolean enableAccessibilityService(String componentName) = 10;
+
+    // Returns true if path is an existing directory.
+    // BUG FIX: allows FileApplyDialogFragment to check /data/system/theme/
+    // from the privileged process instead of from the unprivileged app process
+    // (which always fails, so chooseDest() always fell back to sdcard).
+    boolean isDirectory(String path) = 11;
 
     // Shizuku reserved: called before a newer version of this service is bound.
     // Must clean up resources and call System.exit() before returning.

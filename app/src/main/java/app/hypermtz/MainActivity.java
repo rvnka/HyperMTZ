@@ -35,6 +35,7 @@ import app.hypermtz.ui.dialog.AboutDialogFragment;
 import app.hypermtz.ui.dialog.CommandDialogFragment;
 import app.hypermtz.ui.dialog.FilePickerDialogFragment;
 import app.hypermtz.ui.dialog.SetupGuideDialogFragment;
+import app.hypermtz.util.ShizukuServiceManager;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -44,6 +45,15 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvInterceptTime;
     private TextView tvThemeTime;
     private TextView tvShizukuStatus;
+    private TextView tvShizukuDetail;
+
+    /**
+     * FIX: Track whether the setup guide has been shown this session.
+     * Original bug: the dialog was shown on EVERY onResume() call while the
+     * accessibility service was not running — so it would re-appear every time
+     * the user returned from Accessibility Settings without enabling the service.
+     */
+    private boolean setupGuideShownThisSession = false;
 
     private final BroadcastReceiver serviceStateReceiver = new BroadcastReceiver() {
         @Override
@@ -55,7 +65,7 @@ public class MainActivity extends AppCompatActivity {
     private final ActivityResultLauncher<Intent> allFilesPermissionLauncher =
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(),
                     result -> {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R 
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
                                 && !Environment.isExternalStorageManager()) {
                             showPermissionDeniedToast();
                         }
@@ -64,7 +74,8 @@ public class MainActivity extends AppCompatActivity {
     private final ActivityResultLauncher<String[]> storagePermissionLauncher =
             registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(),
                     results -> {
-                        Boolean granted = results.getOrDefault(Manifest.permission.WRITE_EXTERNAL_STORAGE, false);
+                        Boolean granted = results.getOrDefault(
+                                Manifest.permission.WRITE_EXTERNAL_STORAGE, false);
                         if (Boolean.FALSE.equals(granted)) {
                             showPermissionDeniedToast();
                         }
@@ -79,11 +90,12 @@ public class MainActivity extends AppCompatActivity {
         MaterialToolbar toolbar = findViewById(R.id.toolbar);
         setSupportActionBar(toolbar);
 
-        tvServiceStatus = findViewById(R.id.tv_service_status);
-        tvConnectedTime = findViewById(R.id.tv_service_connected_time);
-        tvInterceptTime = findViewById(R.id.tv_last_intercept_time);
-        tvThemeTime     = findViewById(R.id.tv_theme_install_time);
-        tvShizukuStatus = findViewById(R.id.tv_shizuku_status);
+        tvServiceStatus  = findViewById(R.id.tv_service_status);
+        tvConnectedTime  = findViewById(R.id.tv_service_connected_time);
+        tvInterceptTime  = findViewById(R.id.tv_last_intercept_time);
+        tvThemeTime      = findViewById(R.id.tv_theme_install_time);
+        tvShizukuStatus  = findViewById(R.id.tv_shizuku_status);
+        tvShizukuDetail  = findViewById(R.id.tv_shizuku_detail);
 
         viewModel = new ViewModelProvider(this).get(MainViewModel.class);
         observeViewModel();
@@ -94,6 +106,10 @@ public class MainActivity extends AppCompatActivity {
                 startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
             }
         });
+
+        // Shizuku card: tap to open Shizuku app if unavailable, or retry connection
+        MaterialCardView cardShizuku = findViewById(R.id.card_shizuku_status);
+        cardShizuku.setOnClickListener(v -> onShizukuCardClicked());
 
         Button btnInstall = findViewById(R.id.btn_install_theme);
         btnInstall.setOnClickListener(v -> openFilePicker());
@@ -106,12 +122,13 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         viewModel.refresh();
-        // Mirror the reference-app pattern: proactively attempt Shizuku connection
-        // every resume. This handles cases where Shizuku became available after
-        // the app started, or the UserService crashed and needs rebinding.
         viewModel.retryShizuku();
 
-        if (!ThemeInterceptService.isRunning(this)) {
+        // FIX: only show SetupGuideDialog once per session, not every onResume.
+        // Original: the dialog re-appeared every time the user came back from
+        // Accessibility Settings without enabling the service — very annoying.
+        if (!setupGuideShownThisSession && !ThemeInterceptService.isRunning(this)) {
+            setupGuideShownThisSession = true;
             FragmentManager fm = getSupportFragmentManager();
             if (fm.findFragmentByTag(SetupGuideDialogFragment.TAG) == null) {
                 new SetupGuideDialogFragment().show(fm, SetupGuideDialogFragment.TAG);
@@ -123,9 +140,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         try {
             unregisterReceiver(serviceStateReceiver);
-        } catch (Exception e) {
-            // Log if needed
-        }
+        } catch (Exception ignored) {}
         super.onDestroy();
     }
 
@@ -154,10 +169,34 @@ public class MainActivity extends AppCompatActivity {
                         ? R.string.service_connected
                         : R.string.service_disconnected));
 
-        viewModel.shizukuConnected.observe(this, connected ->
-                tvShizukuStatus.setText(connected
-                        ? R.string.shizuku_connected
-                        : R.string.shizuku_disconnected));
+        // Legacy boolean observer (kept for backward compat with other observers)
+        viewModel.shizukuConnected.observe(this, connected -> {
+            // Detail text is driven by shizukuState — nothing extra needed here
+        });
+
+        // FIX: use granular ShizukuState for the Shizuku card label + detail
+        viewModel.shizukuState.observe(this, state -> {
+            if (state == null) return;
+            switch (state) {
+                case CONNECTED:
+                    tvShizukuStatus.setText(R.string.shizuku_connected);
+                    tvShizukuDetail.setText(R.string.shizuku_detail_connected);
+                    break;
+                case CONNECTING:
+                    tvShizukuStatus.setText(R.string.shizuku_connecting);
+                    tvShizukuDetail.setText(R.string.shizuku_detail_connecting);
+                    break;
+                case PERMISSION_NEEDED:
+                    tvShizukuStatus.setText(R.string.shizuku_permission_needed);
+                    tvShizukuDetail.setText(R.string.shizuku_detail_permission_needed);
+                    break;
+                case UNAVAILABLE:
+                default:
+                    tvShizukuStatus.setText(R.string.shizuku_disconnected);
+                    tvShizukuDetail.setText(R.string.shizuku_detail_unavailable);
+                    break;
+            }
+        });
 
         viewModel.connectedTime.observe(this, tvConnectedTime::setText);
 
@@ -178,10 +217,29 @@ public class MainActivity extends AppCompatActivity {
 
         viewModel.toastEvent.observe(this, event -> {
             @Nullable String msg = event.getIfNotConsumed();
-            if (msg != null) {
-                Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
-            }
+            if (msg != null) Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
         });
+    }
+
+    private void onShizukuCardClicked() {
+        ShizukuServiceManager.ShizukuState state = viewModel.shizukuState.getValue();
+        if (state == ShizukuServiceManager.ShizukuState.UNAVAILABLE) {
+            // Try to open Shizuku app so user can start it
+            try {
+                startActivity(getPackageManager()
+                        .getLaunchIntentForPackage("moe.shizuku.privileged.api"));
+            } catch (Exception e) {
+                // Shizuku not installed — open Play Store / download page
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW,
+                            Uri.parse("https://shizuku.rikka.app/")));
+                } catch (Exception ignored) {}
+            }
+        } else if (state == ShizukuServiceManager.ShizukuState.PERMISSION_NEEDED) {
+            // Retry to trigger the permission dialog
+            viewModel.retryShizuku();
+        }
+        // CONNECTED / CONNECTING → no-op
     }
 
     private void openFilePicker() {
@@ -194,10 +252,9 @@ public class MainActivity extends AppCompatActivity {
 
     private void registerServiceStateReceiver() {
         IntentFilter filter = new IntentFilter();
-        // FIXED: Accessing the constant via the Service class
         filter.addAction(ThemeInterceptService.ACTION_STATE_CHANGED);
-        
-        ContextCompat.registerReceiver(this, serviceStateReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        ContextCompat.registerReceiver(this, serviceStateReceiver, filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED);
     }
 
     private void requestStoragePermissions() {

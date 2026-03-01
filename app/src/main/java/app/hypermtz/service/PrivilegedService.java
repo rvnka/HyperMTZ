@@ -172,12 +172,6 @@ public class PrivilegedService extends IPrivilegedService.Stub {
         }
     }
 
-    /**
-     * Decodes the image at {@code sourcePath} and saves it as a lossless PNG to
-     * {@code destPath}. Both paths are accessed directly by the privileged service
-     * process, avoiding the need to pass pixel data over the Binder transaction
-     * (which risks TransactionTooLargeException on large images).
-     */
     @Override
     public boolean saveBitmapFromFile(String sourcePath, String destPath) {
         Bitmap bitmap = BitmapFactory.decodeFile(sourcePath);
@@ -234,7 +228,6 @@ public class PrivilegedService extends IPrivilegedService.Stub {
     @Override
     public String executeWithOutput(int maxLines, long timeoutMs,
             boolean returnError, String[] command) {
-        // Add a 2-second margin beyond timeoutMs for I/O drain after the process exits.
         final long futureTimeoutMs = timeoutMs + 2_000L;
         try {
             return CompletableFuture
@@ -257,9 +250,6 @@ public class PrivilegedService extends IPrivilegedService.Stub {
         try {
             Process process = new ProcessBuilder(command).start();
 
-            // Drain stdout and stderr concurrently on the dedicated drain executor
-            // to prevent pipe-buffer deadlock without consuming slots on the main
-            // command executor (which submitted this task).
             CompletableFuture<String> stdoutFuture = CompletableFuture.supplyAsync(
                     () -> drainStream(process.getInputStream(), maxLines), drainExecutor);
             CompletableFuture<String> stderrFuture = CompletableFuture.supplyAsync(
@@ -327,6 +317,20 @@ public class PrivilegedService extends IPrivilegedService.Stub {
             Log.e(TAG, "enableAccessibilityService failed for: " + componentName, e);
             return false;
         }
+    }
+
+    /**
+     * Returns true if path is an existing directory.
+     *
+     * BUG FIX: The original FileApplyDialogFragment called new File(path).isDirectory()
+     * from the app process, which always returned false for system paths like
+     * /data/system/theme/ because the app lacks read permission there.
+     * Routing this check through the privileged service fixes chooseDest() so that
+     * themes are correctly installed to the primary MIUI 12+ system path when available.
+     */
+    @Override
+    public boolean isDirectory(String path) {
+        return new File(path).isDirectory();
     }
 
     private String settingsGet(String key) throws IOException, InterruptedException {
