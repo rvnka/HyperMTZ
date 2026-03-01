@@ -7,8 +7,9 @@ plugins {
 val baseVersionCode = 22
 
 android {
-    namespace  = "app.hypermtz"
-    compileSdk = libs.versions.compileSdk.get().toInt()
+    namespace        = "app.hypermtz"
+    compileSdk       = libs.versions.compileSdk.get().toInt()
+    buildToolsVersion = libs.versions.buildTools.get()
 
     defaultConfig {
         applicationId = "app.hypermtz"

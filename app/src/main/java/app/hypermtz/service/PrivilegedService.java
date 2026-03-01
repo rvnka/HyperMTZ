@@ -309,7 +309,7 @@ public class PrivilegedService extends IPrivilegedService.Stub {
     public boolean enableAccessibilityService(String componentName) {
         try {
             String current = settingsGet("enabled_accessibility_services");
-            if (!isEmpty(current) && !"null".equals(current)) {
+            if (!TextUtils.isEmpty(current) && !"null".equals(current)) {
                 ArrayList<String> services = new ArrayList<>(Arrays.asList(current.split(":")));
                 if (services.contains(componentName)) {
                     return true;
@@ -343,10 +343,6 @@ public class PrivilegedService extends IPrivilegedService.Stub {
         return new ProcessBuilder("settings", "put", "secure", key, value)
                 .start()
                 .waitFor() == 0;
-    }
-
-    private static boolean isEmpty(String s) {
-        return s == null || s.isEmpty();
     }
 
     @Override

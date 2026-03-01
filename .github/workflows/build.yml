@@ -13,9 +13,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  JAVA_VERSION:  "17"
-  JAVA_DISTRIB:  "temurin"
-  GRADLE_OPTS:   "-Dorg.gradle.daemon=false -Dorg.gradle.parallel=true"
+  JAVA_VERSION:        "17"
+  JAVA_DISTRIB:        "temurin"
+  SDK_VERSION:         "36"
+  BUILD_TOOLS_VERSION: "36.0.0"
+  GRADLE_OPTS:         "-Dorg.gradle.daemon=false -Dorg.gradle.parallel=true"
 
 jobs:
 
@@ -30,8 +32,10 @@ jobs:
       - name: Android Build Setup
         uses: ./.github/actions/android-setup
         with:
-          java-version:       ${{ env.JAVA_VERSION }}
-          java-distribution:  ${{ env.JAVA_DISTRIB }}
+          java-version:         ${{ env.JAVA_VERSION }}
+          java-distribution:    ${{ env.JAVA_DISTRIB }}
+          sdk-version:          ${{ env.SDK_VERSION }}
+          build-tools-version:  ${{ env.BUILD_TOOLS_VERSION }}
 
       - name: Lint
         run: ./gradlew lint --stacktrace
@@ -60,8 +64,10 @@ jobs:
       - name: Android Build Setup
         uses: ./.github/actions/android-setup
         with:
-          java-version:       ${{ env.JAVA_VERSION }}
-          java-distribution:  ${{ env.JAVA_DISTRIB }}
+          java-version:         ${{ env.JAVA_VERSION }}
+          java-distribution:    ${{ env.JAVA_DISTRIB }}
+          sdk-version:          ${{ env.SDK_VERSION }}
+          build-tools-version:  ${{ env.BUILD_TOOLS_VERSION }}
 
       - name: Decode keystore
         run: |

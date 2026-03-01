@@ -13,7 +13,7 @@ inputs:
     default: '36'
   build-tools-version:
     description: Android build-tools version
-    default: '35.0.0'
+    default: '36.0.0'
 
 runs:
   using: composite
@@ -40,6 +40,18 @@ runs:
       run: |
         echo "ANDROID_HOME=$ANDROID_SDK_ROOT"     >> $GITHUB_ENV
         echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+
+    - name: Verify build-tools aidl binary
+      shell: bash
+      run: |
+        AIDL_BIN="$ANDROID_SDK_ROOT/build-tools/${{ inputs.build-tools-version }}/aidl"
+        if [ ! -f "$AIDL_BIN" ]; then
+          echo "##[error]aidl binary not found at $AIDL_BIN"
+          echo "Installed build-tools:"
+          ls "$ANDROID_SDK_ROOT/build-tools/" || true
+          exit 1
+        fi
+        echo "aidl OK → $AIDL_BIN"
 
     - name: Make gradlew executable
       shell: bash

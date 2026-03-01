@@ -1,3 +1,8 @@
+# ── Crash symbolication ───────────────────────────────────────────────────────
+# Preserve source file names and line numbers so stack traces are readable.
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
+
 # ── Shizuku ───────────────────────────────────────────────────────────────────
 -keep class rikka.shizuku.** { *; }
 -keep class moe.shizuku.** { *; }
