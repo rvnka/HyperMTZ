@@ -36,25 +36,15 @@ import app.hypermtz.ui.dialog.CommandDialogFragment;
 import app.hypermtz.ui.dialog.FilePickerDialogFragment;
 import app.hypermtz.ui.dialog.SetupGuideDialogFragment;
 
-/**
- * Single-Activity host. All mutable state lives in {@link MainViewModel};
- * the Activity only binds LiveData to views and handles Android-specific
- * lifecycle concerns (permission launchers, BroadcastReceiver).
- */
 public class MainActivity extends AppCompatActivity {
 
     private MainViewModel viewModel;
-
     private TextView tvServiceStatus;
     private TextView tvConnectedTime;
     private TextView tvInterceptTime;
     private TextView tvThemeTime;
     private TextView tvShizukuStatus;
 
-    /**
-     * Receives the internal "service state changed" broadcast emitted by
-     * ThemeInterceptService and tells the ViewModel to re-read SharedPreferences.
-     */
     private final BroadcastReceiver serviceStateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -130,7 +120,7 @@ public class MainActivity extends AppCompatActivity {
         try {
             unregisterReceiver(serviceStateReceiver);
         } catch (Exception e) {
-            // Log or ignore if already unregistered
+            // Log if needed
         }
         super.onDestroy();
     }
@@ -198,16 +188,13 @@ public class MainActivity extends AppCompatActivity {
         showDialog(FilePickerDialogFragment.TAG, new FilePickerDialogFragment());
     }
 
-    /**
-     * Fixes UnspecifiedRegisterReceiverFlag error for Android 14+.
-     * Internal broadcasts must explicitly state they are NOT_EXPORTED.
-     */
     private void registerServiceStateReceiver() {
         IntentFilter filter = new IntentFilter();
-        // Fixed: Use the constant from ThemeInterceptService
+        // FIXED: Accessing the constant via the Service class
         filter.addAction(ThemeInterceptService.ACTION_STATE_CHANGED);
         
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+        // FIXED: Explicitly providing export flags for Android 14+ compatibility
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(serviceStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
             registerReceiver(serviceStateReceiver, filter);

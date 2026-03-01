@@ -10,21 +10,15 @@ import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityManager;
-
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * Accessibility service that intercepts MIUI theme authorization broadcasts.
- */
 public class ThemeInterceptService extends AccessibilityService {
 
-    /** Broadcast sent to MainActivity when service state changes. */
-    public static final String ACTION_STATE_CHANGED = "app.hypermtz.ACTION_STATE_CHANGED";
-
-    /** MIUI theme license expiry trigger. */
+    // Define the constant here so it is centrally managed
+    public static final String ACTION_STATE_CHANGED = "app.hypermtz.action_Service_UP";
     private static final String ACTION_THEME_CHECK = "miui.intent.action.CHECK_TIME_UP";
 
     public static final String PREFS_NAME          = "hypermtz_state";
@@ -32,7 +26,6 @@ public class ThemeInterceptService extends AccessibilityService {
     public static final String KEY_INTERCEPT_TIME  = "intercept_time";
 
     private boolean receiverRegistered = false;
-
     private static final DateTimeFormatter TIME_FMT =
             DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss", Locale.getDefault());
 
@@ -47,19 +40,12 @@ public class ThemeInterceptService extends AccessibilityService {
     };
 
     public static boolean isRunning(Context context) {
-        AccessibilityManager manager =
-                (AccessibilityManager) context.getSystemService(Context.ACCESSIBILITY_SERVICE);
-        if (manager == null) {
-            return false;
-        }
-        List<AccessibilityServiceInfo> enabled =
-                manager.getEnabledAccessibilityServiceList(
-                        AccessibilityServiceInfo.FEEDBACK_ALL_MASK);
-        String targetClass   = ThemeInterceptService.class.getName();
-        String targetPackage = context.getPackageName();
+        AccessibilityManager manager = (AccessibilityManager) context.getSystemService(Context.ACCESSIBILITY_SERVICE);
+        if (manager == null) return false;
+        List<AccessibilityServiceInfo> enabled = manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK);
         for (AccessibilityServiceInfo info : enabled) {
             ServiceInfo si = info.getResolveInfo().serviceInfo;
-            if (targetPackage.equals(si.packageName) && targetClass.equals(si.name)) {
+            if (context.getPackageName().equals(si.packageName) && ThemeInterceptService.class.getName().equals(si.name)) {
                 return true;
             }
         }
@@ -81,14 +67,10 @@ public class ThemeInterceptService extends AccessibilityService {
     }
 
     @Override
-    public void onAccessibilityEvent(AccessibilityEvent event) {
-        // No event handling needed
-    }
+    public void onAccessibilityEvent(AccessibilityEvent event) {}
 
     @Override
-    public void onInterrupt() {
-        // No active operations to cancel
-    }
+    public void onInterrupt() {}
 
     @Override
     public void onDestroy() {
@@ -98,16 +80,14 @@ public class ThemeInterceptService extends AccessibilityService {
     }
 
     private void registerThemeReceiver() {
-        if (receiverRegistered) {
-            return;
-        }
+        if (receiverRegistered) return;
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_THEME_CHECK);
         filter.addAction(Intent.ACTION_SCREEN_OFF);
         filter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
 
-        if (Build.VERSION.SDK_INT >= 33) {
-            // RECEIVER_EXPORTED allows external MIUI ThemeManager to deliver broadcasts
+        // MIUI ThemeManager is an external app, so this MUST be EXPORTED
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(themeCheckReceiver, filter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(themeCheckReceiver, filter);
@@ -116,21 +96,19 @@ public class ThemeInterceptService extends AccessibilityService {
     }
 
     private void unregisterThemeReceiver() {
-        if (!receiverRegistered) {
-            return;
-        }
+        if (!receiverRegistered) return;
         unregisterReceiver(themeCheckReceiver);
         receiverRegistered = false;
     }
 
     private void saveTimestamp(String key, String value) {
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .edit().putString(key, value).apply();
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(key, value).apply();
     }
 
     private void broadcastStateChanged() {
         Intent intent = new Intent(ACTION_STATE_CHANGED);
-        intent.setPackage(getPackageName()); // Targets only this app's MainActivity
+        // Ensure the intent stays within your own app
+        intent.setPackage(getPackageName());
         sendBroadcast(intent);
     }
 }
