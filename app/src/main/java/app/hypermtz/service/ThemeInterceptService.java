@@ -7,11 +7,12 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ServiceInfo;
-import android.os.Build;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.AccessibilityNodeInfo;
+
+import androidx.core.content.ContextCompat;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -201,15 +202,12 @@ public class ThemeInterceptService extends AccessibilityService {
         filter.addAction(Intent.ACTION_SCREEN_OFF);
         filter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY); // 1000
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // API 33+: MIUI (privileged system app) can still deliver to NOT_EXPORTED receivers.
-            // This is both correct and more secure than RECEIVER_EXPORTED.
-            registerReceiver(themeCheckReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            // Pre-API 33: plain registerReceiver — identical to the old reflection path
-            // (which called the exact same public API method via reflection for no reason).
-            registerReceiver(themeCheckReceiver, filter);
-        }
+        // ContextCompat.registerReceiver provides the RECEIVER_NOT_EXPORTED flag on all
+        // API levels, satisfying the UnspecifiedRegisterReceiverFlag lint rule on API 26+.
+        // MIUI ThemeManager is a privileged system app — it can still deliver broadcasts
+        // to NOT_EXPORTED receivers, so this is both correct and secure.
+        ContextCompat.registerReceiver(this, themeCheckReceiver, filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED);
 
         receiverRegistered = true;
         Log.d(TAG, "BroadcastReceiver registered, priority=" + filter.getPriority());
