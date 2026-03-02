@@ -3,7 +3,9 @@ package app.hypermtz.util;
 import android.content.ComponentName;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.util.Log;
 
 import androidx.annotation.MainThread;
@@ -17,36 +19,24 @@ import rikka.shizuku.Shizuku;
 /**
  * Manages the Shizuku binder lifecycle and the IPrivilegedService UserService connection.
  *
- * Design principles (derived from reading the Shizuku API source):
+ * Key design rules (from reading Shizuku API source):
  *
- * 1. Shizuku.bindUserService() is safe to call multiple times.
- *    The server (UserServiceManager) holds a synchronized record per tag and sets
- *    a `starting` flag. Duplicate calls while starting just re-register the callback
- *    and return immediately — the UserService process is NOT restarted.
- *    Therefore we do NOT use a client-side `binding` flag to gate bindUserService()
- *    calls. Doing so only adds complexity without benefit and introduced the previous
- *    stuck-at-CONNECTING bug when the flag got into a bad state.
+ * 1. Shizuku.bindUserService() is safe to call multiple times — the server deduplicates
+ *    by tag. No client-side "already binding" guard needed.
  *
  * 2. shouldShowRequestPermissionRationale() == true means "Deny and don't ask again".
- *    Per the official Shizuku demo (DemoActivity.checkPermission), when this returns
- *    true we must NOT call requestPermission(). Doing so would show an unresponsive
- *    dialog. Instead we show a message directing the user to the Shizuku app to
- *    re-grant manually.
+ *    Do NOT call requestPermission() in this case (per official Shizuku demo).
  *
- * 3. onServiceDisconnected → ShizukuServiceConnection removed from Shizuku's internal
- *    cache (ShizukuServiceConnections). The next bindUserService() creates a fresh
- *    connection. So in onServiceDisconnected we simply call checkAndBind() to rebind
- *    immediately, with no extra state manipulation required.
- *
- * 4. The `binding` field is kept ONLY for UI state (to show CONNECTING vs PERMISSION_NEEDED
- *    after bindUserService is called but before onServiceConnected fires). It is never
- *    used to block or skip a bindUserService() call.
+ * 3. NEVER call checkAndBind() recursively from within bindUserService() or from
+ *    onServiceConnected/onServiceDisconnected. Shizuku callbacks may be rapid and a
+ *    recursive call chain causes StackOverflowError → app crash → black screen.
+ *    Recovery is handled passively: onResume() calls retryConnection() which is safe.
  */
 public final class ShizukuServiceManager {
 
     public enum ShizukuState {
         UNAVAILABLE,        // Shizuku not installed / server not running
-        PERMISSION_NEEDED,  // Shizuku running but permission not granted
+        PERMISSION_NEEDED,  // Shizuku running but permission not yet granted
         PERMISSION_DENIED,  // User chose "Deny and don't ask again"
         CONNECTING,         // Permission granted; waiting for UserService binder
         CONNECTED           // UserService binder alive and ready for IPC
@@ -55,9 +45,7 @@ public final class ShizukuServiceManager {
     public interface Callback {
         void onServiceConnected(IPrivilegedService service);
         void onServiceDisconnected();
-        /** Only fired on an actual grant transition (user tapped Allow). */
         void onPermissionGranted();
-        /** @param isPermanent true if user chose "don't ask again" */
         void onPermissionDenied(boolean isPermanent);
         void onStateChanged(ShizukuState newState);
     }
@@ -66,15 +54,11 @@ public final class ShizukuServiceManager {
     private static final int    REQUEST_CODE = 0xADB;
 
     private final Callback callback;
+    private final Handler  mainHandler = new Handler(Looper.getMainLooper());
 
     @Nullable private IPrivilegedService service;
     private boolean bound   = false;
-    /**
-     * UI-only flag: true between bindUserService() and onServiceConnected/Disconnected.
-     * NOT used to gate bindUserService() calls — Shizuku server handles deduplication.
-     * Kept only so we can report CONNECTING instead of PERMISSION_NEEDED while the
-     * UserService process is being launched (which can take a few seconds).
-     */
+    /** UI-only flag: true while waiting for onServiceConnected after bindUserService(). */
     private boolean binding = false;
 
     private ShizukuState lastReportedState = null;
@@ -105,9 +89,9 @@ public final class ShizukuServiceManager {
                     Log.w(TAG, "onServiceConnected: received dead binder");
                     bound   = false;
                     service = null;
-                    // Don't report PERMISSION_NEEDED — this is a process-level failure,
-                    // not a permission problem. Attempt an immediate rebind.
-                    checkAndBind();
+                    // Report CONNECTING and let the next retryConnection() (from onResume)
+                    // attempt a rebind. Do NOT call checkAndBind() here — recursive!
+                    reportState(ShizukuState.CONNECTING);
                     return;
                 }
 
@@ -120,20 +104,25 @@ public final class ShizukuServiceManager {
 
             @Override
             public void onServiceDisconnected(ComponentName name) {
-                // The UserService process has died (crash, Shizuku restart, etc.).
-                // Permission is still granted — do NOT report PERMISSION_NEEDED.
-                // ShizukuServiceConnections has already removed the dead connection
-                // from its cache, so the next bindUserService() creates a fresh one.
+                // UserService process died. Permission is still granted.
+                // Do NOT call checkAndBind() here — it leads to recursive bind
+                // calls if the UserService keeps crashing on startup.
+                // Instead, post a delayed retry to the main thread so we don't
+                // recurse from within a Shizuku callback.
                 Log.d(TAG, "IPrivilegedService disconnected");
                 binding = false;
                 service = null;
                 bound   = false;
+                reportState(ShizukuState.CONNECTING);
                 ShizukuServiceManager.this.callback.onServiceDisconnected();
-                checkAndBind();
+
+                // Post a safe, non-recursive retry with a small delay.
+                // If the UserService crashed, this gives the OS time to clean up
+                // before we try to restart it.
+                mainHandler.postDelayed(ShizukuServiceManager.this::checkAndBind, 500);
             }
         };
 
-        // Sticky: fires on the main thread immediately if the binder is already alive.
         this.onBinderReceived = () -> {
             Log.d(TAG, "Shizuku binder received");
             checkAndBind();
@@ -141,6 +130,7 @@ public final class ShizukuServiceManager {
 
         this.onBinderDead = () -> {
             Log.d(TAG, "Shizuku binder died");
+            mainHandler.removeCallbacksAndMessages(null);
             binding = false;
             service = null;
             bound   = false;
@@ -157,7 +147,6 @@ public final class ShizukuServiceManager {
                 bindUserService();
             } else {
                 binding = false;
-                // Check for permanent denial (don't ask again).
                 boolean permanent = Shizuku.shouldShowRequestPermissionRationale();
                 reportState(permanent ? ShizukuState.PERMISSION_DENIED
                                       : ShizukuState.PERMISSION_NEEDED);
@@ -172,11 +161,12 @@ public final class ShizukuServiceManager {
     public void addListeners() {
         Shizuku.addBinderDeadListener(onBinderDead);
         Shizuku.addRequestPermissionResultListener(onPermissionResult);
-        Shizuku.addBinderReceivedListenerSticky(onBinderReceived); // must be last
+        Shizuku.addBinderReceivedListenerSticky(onBinderReceived); // fires sync if binder alive
     }
 
     @MainThread
     public void removeListeners() {
+        mainHandler.removeCallbacksAndMessages(null);
         Shizuku.removeBinderReceivedListener(onBinderReceived);
         Shizuku.removeBinderDeadListener(onBinderDead);
         Shizuku.removeRequestPermissionResultListener(onPermissionResult);
@@ -184,9 +174,8 @@ public final class ShizukuServiceManager {
     }
 
     /**
-     * Call from Activity.onResume() every time.
-     * Shizuku server deduplicates bindUserService() calls internally, so calling
-     * this on every resume is safe and ensures we recover from any transient failure.
+     * Call from Activity.onResume(). Safe to call frequently — Shizuku server
+     * deduplicates bindUserService() calls; this won't restart the UserService.
      */
     @MainThread
     public void retryConnection() {
@@ -211,7 +200,6 @@ public final class ShizukuServiceManager {
     // ── Private helpers ───────────────────────────────────────────────────────
 
     private void checkAndBind() {
-        // Already have a live binder — nothing to do.
         if (bound && isAvailable()) {
             reportState(ShizukuState.CONNECTED);
             return;
@@ -234,8 +222,6 @@ public final class ShizukuServiceManager {
         try {
             perm = Shizuku.checkSelfPermission();
         } catch (Exception e) {
-            // Transient binder error — report CONNECTING if we already started binding,
-            // otherwise PERMISSION_NEEDED so the user sees something actionable.
             Log.e(TAG, "checkSelfPermission failed", e);
             reportState(binding ? ShizukuState.CONNECTING : ShizukuState.PERMISSION_NEEDED);
             return;
@@ -244,9 +230,7 @@ public final class ShizukuServiceManager {
         if (perm == PackageManager.PERMISSION_GRANTED) {
             bindUserService();
         } else if (Shizuku.shouldShowRequestPermissionRationale()) {
-            // Per official Shizuku demo: "Deny and don't ask again" was selected.
-            // We must NOT call requestPermission() here — show guidance to the user
-            // to open the Shizuku app and grant permission manually.
+            // "Deny and don't ask again" — do NOT call requestPermission().
             Log.w(TAG, "checkAndBind: permission permanently denied");
             binding = false;
             reportState(ShizukuState.PERMISSION_DENIED);
@@ -259,26 +243,23 @@ public final class ShizukuServiceManager {
         }
     }
 
+    /**
+     * Calls Shizuku.bindUserService(). Safe to call multiple times — Shizuku server
+     * deduplicates by tag internally (UserServiceManager.addUserService).
+     * On exception, does NOT call checkAndBind() to avoid recursion.
+     */
     private void bindUserService() {
-        // Update UI state immediately so the user sees "Connecting..."
-        // even before onServiceConnected fires (UserService process launch takes
-        // a few seconds as Shizuku forks a new process via sh).
         binding = true;
         reportState(ShizukuState.CONNECTING);
-
         try {
             Log.d(TAG, "bindUserService: calling Shizuku.bindUserService");
-            // Safe to call multiple times — Shizuku server deduplicates by tag.
-            // If the UserService is already starting (starting=true on server), the
-            // server just re-registers our callback and waits. No duplicate launch.
             Shizuku.bindUserService(serviceArgs, connection);
         } catch (Exception e) {
-            // RuntimeException from Shizuku (wraps RemoteException).
-            // The service could not be started at all — reset binding flag.
-            binding = false;
-            Log.e(TAG, "bindUserService failed", e);
-            // Re-check the actual state rather than guessing.
-            checkAndBind();
+            // RuntimeException wraps RemoteException from Shizuku.
+            // Do NOT call checkAndBind() here — that would create a recursive loop
+            // if Shizuku keeps throwing (e.g. during Shizuku restart).
+            // Leave binding=true and state=CONNECTING; next retryConnection() recovers.
+            Log.e(TAG, "bindUserService failed — will retry on next resume", e);
         }
     }
 

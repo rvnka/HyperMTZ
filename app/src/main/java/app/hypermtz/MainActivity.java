@@ -108,12 +108,24 @@ public class MainActivity extends AppCompatActivity {
         btnInstall.setOnClickListener(v -> openFilePicker());
 
         registerServiceStateReceiver();
-        requestStoragePermissions();
+        // Storage permissions are requested in onResume (not onCreate) to avoid
+        // a black-screen race on MIUI/HyperOS where launching an intent before the
+        // window is fully attached causes the Activity to render blank on return.
     }
+
+    private boolean storagePermissionRequested = false;
 
     @Override
     protected void onResume() {
         super.onResume();
+
+        // Request storage permission once per session, after the window is visible.
+        // Doing this in onCreate on MIUI causes a black-screen on return from Settings.
+        if (!storagePermissionRequested) {
+            storagePermissionRequested = true;
+            requestStoragePermissions();
+        }
+
         viewModel.refresh();
         viewModel.retryShizuku();
 
