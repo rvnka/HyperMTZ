@@ -34,6 +34,23 @@
             </intent-filter>
         </activity>
 
+        <!--
+            PrivilegedService is the Shizuku UserService launched as a privileged
+            app_process by the Shizuku server. It is loaded via ClassLoader directly
+            from the APK path (not through the normal Service binding mechanism), so
+            Android does not strictly require this entry. However, declaring it:
+              • Prevents MIUI/HyperOS background kill heuristics from rejecting the
+                class during app_process startup (some MIUI builds consult the manifest
+                to decide whether a class may run in a background process).
+              • Makes adb shell "dumpsys activity services" show the component name.
+              • Satisfies strict ProGuard/R8 keep-class analysis for release builds.
+            android:exported="false" — not accessible by external apps via Intent.
+        -->
+        <service
+            android:name=".service.PrivilegedService"
+            android:exported="false"
+            android:process=":privileged" />
+
         <service
             android:name=".service.ThemeInterceptService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
