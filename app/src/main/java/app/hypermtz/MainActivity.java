@@ -1,11 +1,10 @@
 package app.hypermtz;
 
-import android.Manifest;
 import android.content.BroadcastReceiver;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -29,11 +28,18 @@ import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.card.MaterialCardView;
 import com.google.android.material.color.DynamicColors;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 import app.hypermtz.service.ThemeInterceptService;
 import app.hypermtz.ui.MainViewModel;
 import app.hypermtz.ui.dialog.AboutDialogFragment;
 import app.hypermtz.ui.dialog.CommandDialogFragment;
-import app.hypermtz.ui.dialog.FilePickerDialogFragment;
+import app.hypermtz.ui.dialog.FileApplyDialogFragment;
 import app.hypermtz.ui.dialog.SetupGuideDialogFragment;
 import app.hypermtz.util.ShizukuServiceManager;
 
@@ -48,6 +54,16 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvShizukuDetail;
 
     private boolean setupGuideShownThisSession = false;
+    private boolean storagePermissionRequested = false;
+
+    /**
+     * Single-thread executor for copying SAF content:// URI to the app's cache
+     * directory before passing the local path to PrivilegedService.copyFile().
+     * PrivilegedService (running as ADB shell/root) can read from the app's
+     * external cache dir (/sdcard/Android/data/app.hypermtz/cache/) but cannot
+     * dereference content:// URIs, which require ContentResolver in the app process.
+     */
+    private final ExecutorService copyExecutor = Executors.newSingleThreadExecutor();
 
     private final BroadcastReceiver serviceStateReceiver = new BroadcastReceiver() {
         @Override
@@ -56,24 +72,19 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
-    private final ActivityResultLauncher<Intent> allFilesPermissionLauncher =
-            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(),
-                    result -> {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
-                                && !Environment.isExternalStorageManager()) {
-                            showPermissionDeniedToast();
-                        }
-                    });
-
-    private final ActivityResultLauncher<String[]> storagePermissionLauncher =
-            registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(),
-                    results -> {
-                        Boolean granted = results.getOrDefault(
-                                Manifest.permission.WRITE_EXTERNAL_STORAGE, false);
-                        if (Boolean.FALSE.equals(granted)) {
-                            showPermissionDeniedToast();
-                        }
-                    });
+    /**
+     * SAF file picker — replaces the old custom FilePickerDialogFragment.
+     *
+     * Using ACTION_OPEN_DOCUMENT (not GET_CONTENT) so the app gets a
+     * persistable URI with long-term read access, and the system file picker
+     * is used directly without requiring MANAGE_EXTERNAL_STORAGE on every device.
+     *
+     * MIME type "*\/*" shows all files; most MIUI file managers display .mtz files.
+     * We validate the extension in the result callback.
+     */
+    private final ActivityResultLauncher<String[]> pickThemeLauncher =
+            registerForActivityResult(new ActivityResultContracts.OpenDocument(),
+                    this::onThemeFilePicked);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -108,22 +119,36 @@ public class MainActivity extends AppCompatActivity {
         btnInstall.setOnClickListener(v -> openFilePicker());
 
         registerServiceStateReceiver();
-        // Storage permissions are requested in onResume (not onCreate) to avoid
-        // a black-screen race on MIUI/HyperOS where launching an intent before the
-        // window is fully attached causes the Activity to render blank on return.
     }
-
-    private boolean storagePermissionRequested = false;
 
     @Override
     protected void onResume() {
         super.onResume();
 
-        // Request storage permission once per session, after the window is visible.
-        // Doing this in onCreate on MIUI causes a black-screen on return from Settings.
         if (!storagePermissionRequested) {
             storagePermissionRequested = true;
-            requestStoragePermissions();
+            // MANAGE_EXTERNAL_STORAGE is needed by computeThemeStatus() to read
+            // /sdcard/Android/data/com.android.thememanager/files/snapshot/ —
+            // without it, File.listFiles() returns null on Android 11+ (scoped
+            // storage) and the status card always shows "No theme installed yet"
+            // even after a successful install.
+            // On Android < 11 the legacy READ/WRITE_EXTERNAL_STORAGE permissions
+            // (declared in the manifest with maxSdkVersion=32) are sufficient.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                    && !Environment.isExternalStorageManager()) {
+                try {
+                    Intent intent = new Intent(
+                            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                } catch (Exception e) {
+                    // Fallback: open the generic all-files-access settings page.
+                    try {
+                        startActivity(new Intent(
+                                Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                    } catch (Exception ignored) {}
+                }
+            }
         }
 
         viewModel.refresh();
@@ -140,9 +165,8 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
-        try {
-            unregisterReceiver(serviceStateReceiver);
-        } catch (Exception ignored) {}
+        try { unregisterReceiver(serviceStateReceiver); } catch (Exception ignored) {}
+        copyExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -155,15 +179,15 @@ public class MainActivity extends AppCompatActivity {
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
         int id = item.getItemId();
-        if (id == R.id.action_restart_system_ui) {
-            viewModel.restartSystemUi();
-        } else if (id == R.id.action_run_command) {
+        if (id == R.id.action_run_command) {
             showDialog(CommandDialogFragment.TAG, new CommandDialogFragment());
         } else if (id == R.id.action_about) {
             showDialog(AboutDialogFragment.TAG, new AboutDialogFragment());
         }
         return super.onOptionsItemSelected(item);
     }
+
+    // ── ViewModel observers ────────────────────────────────────────────────────
 
     private void observeViewModel() {
         viewModel.serviceRunning.observe(this, running ->
@@ -221,15 +245,108 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    // ── File picker ────────────────────────────────────────────────────────────
+
+    private void openFilePicker() {
+        if (!viewModel.isShizukuAvailable()) {
+            Toast.makeText(this, R.string.shizuku_not_connected, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        // Open system file picker — shows all files (*/*).
+        // The result is handled in onThemeFilePicked().
+        pickThemeLauncher.launch(new String[]{"*/*"});
+    }
+
     /**
-     * Shizuku card click handler.
+     * Called when the user selects a file from the system file picker.
      *
-     * UNAVAILABLE       → try to open Shizuku app so user can start it
-     * PERMISSION_NEEDED → force-retry (ShizukuServiceManager will call
-     *                     requestPermission() unconditionally — see fix #3)
-     * CONNECTING        → no-op, already in progress
-     * CONNECTED         → no-op
+     * The selected {@code uri} is a {@code content://} URI. PrivilegedService runs
+     * in a different process as ADB shell and cannot call ContentResolver, so we
+     * must copy the bytes to a local cache file first, then hand the absolute path
+     * to FileApplyDialogFragment which passes it to PrivilegedService.copyFile().
+     *
+     * We use {@code getExternalCacheDir()} (on sdcard) rather than {@code getCacheDir()}
+     * (on /data/data/) because it is accessible by ADB shell on all MIUI versions
+     * without relying on SELinux policy for /data/data/<package>/.
      */
+    private void onThemeFilePicked(@Nullable Uri uri) {
+        if (uri == null) return;
+
+        String filename = getFilenameFromUri(uri);
+        if (filename == null || !filename.toLowerCase(java.util.Locale.ROOT).endsWith(".mtz")) {
+            Toast.makeText(this, R.string.error_not_mtz_file, Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        Toast.makeText(this, R.string.preparing_file, Toast.LENGTH_SHORT).show();
+
+        copyExecutor.execute(() -> {
+            File outFile = null;
+            try {
+                File cacheDir = getExternalCacheDir();
+                if (cacheDir == null) cacheDir = getCacheDir();
+                outFile = new File(cacheDir, filename);
+
+                ContentResolver cr = getContentResolver();
+                try (InputStream in = cr.openInputStream(uri);
+                     FileOutputStream out = new FileOutputStream(outFile)) {
+                    if (in == null) throw new IOException("Cannot open URI: " + uri);
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                    out.flush();
+                }
+
+                final String path = outFile.getAbsolutePath();
+                runOnUiThread(() -> {
+                    if (!isFinishing()) showApplyDialog(path);
+                });
+            } catch (Exception e) {
+                final File failedFile = outFile;
+                runOnUiThread(() -> {
+                    Toast.makeText(this, R.string.error_copy_cache, Toast.LENGTH_SHORT).show();
+                });
+                if (failedFile != null) failedFile.delete();
+            }
+        });
+    }
+
+    /**
+     * Extracts the display filename from a content:// URI using the ContentResolver.
+     * Falls back to the last path segment if the cursor query fails.
+     */
+    @Nullable
+    private String getFilenameFromUri(Uri uri) {
+        // Try ContentResolver first (works for most storage providers)
+        try (android.database.Cursor cursor = getContentResolver().query(
+                uri,
+                new String[]{android.provider.OpenableColumns.DISPLAY_NAME},
+                null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                String name = cursor.getString(0);
+                if (name != null && !name.isEmpty()) return name;
+            }
+        } catch (Exception ignored) {}
+
+        // Fallback: last path segment of the URI
+        String path = uri.getLastPathSegment();
+        if (path != null) {
+            int slash = path.lastIndexOf('/');
+            return slash >= 0 ? path.substring(slash + 1) : path;
+        }
+        return null;
+    }
+
+    private void showApplyDialog(String filePath) {
+        FragmentManager fm = getSupportFragmentManager();
+        if (fm.findFragmentByTag(FileApplyDialogFragment.TAG) == null) {
+            FileApplyDialogFragment.newInstance(filePath)
+                    .show(fm, FileApplyDialogFragment.TAG);
+        }
+    }
+
+    // ── Shizuku card ───────────────────────────────────────────────────────────
+
     private void onShizukuCardClicked() {
         ShizukuServiceManager.ShizukuState state = viewModel.shizukuState.getValue();
         if (state == ShizukuServiceManager.ShizukuState.UNAVAILABLE) {
@@ -240,59 +357,24 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 try {
                     startActivity(new Intent(Intent.ACTION_VIEW,
-                            Uri.parse("https://shizuku.rikka.app/")));
+                            android.net.Uri.parse("https://shizuku.rikka.app/")));
                 } catch (Exception ignored) {}
             }
-        } else if (state == ShizukuServiceManager.ShizukuState.PERMISSION_NEEDED
-                || state == ShizukuServiceManager.ShizukuState.PERMISSION_DENIED) {
-            if (state == ShizukuServiceManager.ShizukuState.PERMISSION_DENIED) {
-                // Permanent denial — open Shizuku app so the user can re-grant manually.
-                Intent launch = getPackageManager()
-                        .getLaunchIntentForPackage("moe.shizuku.privileged.api");
-                if (launch != null) startActivity(launch);
-            } else {
-                // Normal denial or first time — retry triggers requestPermission().
-                viewModel.retryShizuku();
-            }
+        } else if (state == ShizukuServiceManager.ShizukuState.PERMISSION_DENIED) {
+            Intent launch = getPackageManager()
+                    .getLaunchIntentForPackage("moe.shizuku.privileged.api");
+            if (launch != null) startActivity(launch);
+        } else if (state == ShizukuServiceManager.ShizukuState.PERMISSION_NEEDED) {
+            viewModel.retryShizuku();
         }
     }
 
-    private void openFilePicker() {
-        if (!viewModel.isShizukuAvailable()) {
-            Toast.makeText(this, R.string.shizuku_not_connected, Toast.LENGTH_SHORT).show();
-            return;
-        }
-        showDialog(FilePickerDialogFragment.TAG, new FilePickerDialogFragment());
-    }
+    // ── Utilities ──────────────────────────────────────────────────────────────
 
     private void registerServiceStateReceiver() {
-        IntentFilter filter = new IntentFilter();
-        filter.addAction(ThemeInterceptService.ACTION_STATE_CHANGED);
+        IntentFilter filter = new IntentFilter(ThemeInterceptService.ACTION_STATE_CHANGED);
         ContextCompat.registerReceiver(this, serviceStateReceiver, filter,
                 ContextCompat.RECEIVER_NOT_EXPORTED);
-    }
-
-    private void requestStoragePermissions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            if (!Environment.isExternalStorageManager()) {
-                Intent intent = new Intent(
-                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                        Uri.parse("package:" + getPackageName()));
-                allFilesPermissionLauncher.launch(intent);
-            }
-        } else {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                    != PackageManager.PERMISSION_GRANTED) {
-                storagePermissionLauncher.launch(new String[]{
-                        Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                        Manifest.permission.READ_EXTERNAL_STORAGE
-                });
-            }
-        }
-    }
-
-    private void showPermissionDeniedToast() {
-        Toast.makeText(this, R.string.permission_storage_denied, Toast.LENGTH_SHORT).show();
     }
 
     private void showDialog(String tag, androidx.fragment.app.DialogFragment fragment) {

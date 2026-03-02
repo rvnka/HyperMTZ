@@ -1,9 +1,11 @@
 package app.hypermtz.ui.dialog;
 
 import android.app.Dialog;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.RemoteException;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.Button;
@@ -16,9 +18,6 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.fragment.app.DialogFragment;
 import androidx.lifecycle.ViewModelProvider;
 
-import com.google.android.material.textfield.TextInputEditText;
-import com.google.android.material.textfield.TextInputLayout;
-
 import java.io.File;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -27,21 +26,47 @@ import app.hypermtz.IPrivilegedService;
 import app.hypermtz.R;
 import app.hypermtz.ui.MainViewModel;
 
+/**
+ * Dialog that copies a user-selected .mtz file to the MIUI ThemeManager
+ * snapshot location and then triggers installation via ApplyThemeForScreenshot.
+ *
+ * Installation method (mirrors theme_keeper.sh + io.vi.hypertheme MainActivity.t()):
+ *
+ *   1. Shizuku (PrivilegedService.copyFile) copies the .mtz to:
+ *        /sdcard/Android/data/com.android.thememanager/files/snapshot/snapshot.mtz
+ *      This path is writable only from ADB shell level — hence the privileged service.
+ *
+ *   2. startActivity() launches:
+ *        com.android.thememanager/.ApplyThemeForScreenshot
+ *      with the standard MIUI theme-apply extras. ThemeManager reads the snapshot
+ *      and presents its own installation UI to the user.
+ *
+ *   The ThemeInterceptService AccessibilityService auto-clicks any approval button
+ *   that ThemeManager shows during the process.
+ */
 public class FileApplyDialogFragment extends DialogFragment {
 
     public static final String TAG = "FileApplyDialog";
 
     private static final String ARG_FILE_PATH = "file_path";
+    private static final String TAG_LOG = "FileApplyDialog";
 
     /**
-     * Theme destination directories, tried in order.
-     *
-     * Primary:  /data/system/theme/compatibility-v12  (MIUI 12+ / HyperOS)
-     * Fallback: ThemeManager snapshot dir             (older MIUI / HyperOS)
+     * MIUI ThemeManager snapshot path — the fixed location where ThemeManager
+     * expects the .mtz file before applying via ApplyThemeForScreenshot.
+     * Equivalent to $SNAPSHOT_FILE in theme_keeper.sh.
      */
-    private static final String DEST_PRIMARY  = "/data/system/theme/compatibility-v12/";
-    private static final String DEST_FALLBACK =
-            "/sdcard/Android/data/com.android.thememanager/files/snapshot/";
+    private static final String SNAPSHOT_PATH =
+            "/sdcard/Android/data/com.android.thememanager/files/snapshot/snapshot.mtz";
+
+    /**
+     * MIUI ThemeManager activity that applies a theme from the snapshot path.
+     * Equivalent to $THEME_ACTIVITY in theme_keeper.sh / MainActivity.t() in
+     * the reference decompiled app.
+     */
+    private static final String THEME_MANAGER_PKG = "com.android.thememanager";
+    private static final String THEME_APPLY_ACTIVITY =
+            "com.android.thememanager.ApplyThemeForScreenshot";
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
@@ -56,54 +81,47 @@ public class FileApplyDialogFragment extends DialogFragment {
     @NonNull
     @Override
     public Dialog onCreateDialog(@Nullable Bundle savedInstanceState) {
-        String filePath  = requireArguments().getString(ARG_FILE_PATH, "");
+        String filePath   = requireArguments().getString(ARG_FILE_PATH, "");
         File   sourceFile = new File(filePath);
 
         View view = LayoutInflater.from(requireContext())
                 .inflate(R.layout.dialog_file_apply, null);
 
-        TextView          tvFileName = view.findViewById(R.id.tv_file_name);
-        TextInputLayout   tilName    = view.findViewById(R.id.til_theme_name);
-        TextInputEditText etName     = view.findViewById(R.id.et_theme_name);
-        Button            btnImport  = view.findViewById(R.id.btn_import);
-        Button            btnApply   = view.findViewById(R.id.btn_apply);
+        TextView tvFileName = view.findViewById(R.id.tv_file_name);
+        Button   btnImport  = view.findViewById(R.id.btn_import);
+        Button   btnApply   = view.findViewById(R.id.btn_apply);
+
+        // Hide the (now unused) theme-name input — destination is always snapshot.mtz.
+        View tilName = view.findViewById(R.id.til_theme_name);
+        if (tilName != null) tilName.setVisibility(View.GONE);
 
         tvFileName.setText(sourceFile.getName());
-        etName.setText(stripExtension(sourceFile.getName()));
 
         MainViewModel viewModel = new ViewModelProvider(requireActivity())
                 .get(MainViewModel.class);
 
-        btnImport.setOnClickListener(v -> {
-            String name = getValidatedName(tilName, etName);
-            if (name != null) copyAndInstall(viewModel, sourceFile, name, false);
-        });
+        // Import only: copy to snapshot path, do not launch ThemeManager.
+        btnImport.setOnClickListener(v -> copyToSnapshot(viewModel, sourceFile, false));
 
-        btnApply.setOnClickListener(v -> {
-            String name = getValidatedName(tilName, etName);
-            if (name != null) copyAndInstall(viewModel, sourceFile, name, true);
-        });
+        // Import & Apply: copy + launch ApplyThemeForScreenshot.
+        btnApply.setOnClickListener(v -> copyToSnapshot(viewModel, sourceFile, true));
 
         return new AlertDialog.Builder(requireContext())
                 .setView(view)
                 .create();
     }
 
-    @Nullable
-    private String getValidatedName(TextInputLayout tilName, TextInputEditText etName) {
-        String name = etName.getText() != null
-                ? etName.getText().toString().trim()
-                : "";
-        if (name.isEmpty()) {
-            tilName.setError(getString(R.string.error_name_required));
-            return null;
-        }
-        tilName.setError(null);
-        return name;
-    }
+    // ── Core logic ─────────────────────────────────────────────────────────────
 
-    private void copyAndInstall(MainViewModel viewModel, File sourceFile,
-            String themeName, boolean applyAfterCopy) {
+    /**
+     * Uses Shizuku (PrivilegedService) to copy the source .mtz file to the
+     * ThemeManager snapshot path, then optionally launches ApplyThemeForScreenshot.
+     *
+     * @param applyAfterCopy  if true, launch ThemeManager to apply the theme
+     *                        immediately after a successful copy.
+     */
+    private void copyToSnapshot(MainViewModel viewModel, File sourceFile,
+            boolean applyAfterCopy) {
         IPrivilegedService service = viewModel.getPrivilegedService();
         if (service == null) {
             Toast.makeText(requireContext(), R.string.shizuku_not_connected,
@@ -115,21 +133,23 @@ public class FileApplyDialogFragment extends DialogFragment {
         viewModel.setThemeCopyRunning(true);
 
         executor.submit(() -> {
-            // BUG FIX: chooseDest() previously called new File(path).isDirectory() from
-            // the app process, which always returned false for /data/system/theme/ because
-            // the app lacks read permission there — so it always fell back to sdcard.
-            // Now we delegate the directory check to the privileged service (IPC call),
-            // which runs as ADB/root and can actually stat the system path.
-            String destination = chooseDest(service, themeName);
             boolean success;
             try {
-                success = service.copyFile(sourceFile.getAbsolutePath(), destination);
+                success = service.copyFile(sourceFile.getAbsolutePath(), SNAPSHOT_PATH);
             } catch (RemoteException e) {
+                Log.e(TAG_LOG, "copyFile IPC failed", e);
                 success = false;
             }
 
-            final boolean copySucceeded = success;
-            final String  destPath      = destination;
+            // Clean up the temporary cache copy created by MainActivity to bridge
+            // the content:// URI and the Shizuku process.
+            String srcPath = sourceFile.getAbsolutePath();
+            if (srcPath.contains("/cache/")) {
+                //noinspection ResultOfMethodCallIgnored
+                sourceFile.delete();
+            }
+
+            final boolean copyOk = success;
             if (!isAdded()) {
                 viewModel.setThemeCopyRunning(false);
                 return;
@@ -140,12 +160,13 @@ public class FileApplyDialogFragment extends DialogFragment {
                     return;
                 }
                 viewModel.setThemeCopyRunning(false);
-                if (copySucceeded) {
+                if (copyOk) {
                     Toast.makeText(requireContext(), R.string.copy_success,
                             Toast.LENGTH_SHORT).show();
                     if (applyAfterCopy) {
-                        triggerMiuiThemeApply(destPath);
+                        launchApplyThemeForScreenshot();
                     }
+                    viewModel.refresh();
                 } else {
                     Toast.makeText(requireContext(), R.string.copy_failed,
                             Toast.LENGTH_SHORT).show();
@@ -155,46 +176,39 @@ public class FileApplyDialogFragment extends DialogFragment {
     }
 
     /**
-     * Determines the destination path.
+     * Launches {@code com.android.thememanager/.ApplyThemeForScreenshot} with the
+     * standard MIUI theme-apply extras.
      *
-     * BUG FIX: The original version called new File(DEST_PRIMARY).isDirectory() from
-     * the unprivileged app process. Since the app cannot read /data/system/theme/,
-     * isDirectory() always returned false, and themes were always installed to the
-     * sdcard fallback path even on devices where the primary path exists.
+     * This is the exact method used by the reference app (io.vi.hypertheme,
+     * MainActivity.t()) and reproduced in theme_keeper.sh (restore_theme / install_theme).
      *
-     * Now delegates to service.isDirectory() which runs with ADB/root privileges.
+     * Extras breakdown:
+     *   theme_file_path    — absolute path to the .mtz snapshot file
+     *   ver2_step          — tells ThemeManager this is a ver2 apply step
+     *   api_called_from    — spoofs the caller as MiUI ThemeStore (bypasses auth checks)
+     *   theme_apply_flags  — 1 = apply all theme components
+     *
+     * FLAG_ACTIVITY_NEW_TASK is required because we may be starting from a
+     * DialogFragment that is no longer the foreground task.
      */
-    private static String chooseDest(IPrivilegedService service, String themeName) {
-        try {
-            if (service.isDirectory(DEST_PRIMARY)) {
-                return DEST_PRIMARY + themeName + ".mtz";
-            }
-        } catch (RemoteException ignored) {
-            // If the IPC fails, fall through to sdcard fallback
-        }
-        return DEST_FALLBACK + themeName + ".mtz";
-    }
-
-    private void triggerMiuiThemeApply(String themePath) {
+    private void launchApplyThemeForScreenshot() {
         try {
             Intent intent = new Intent();
-            intent.setClassName(
-                    "com.android.thememanager",
-                    "com.android.thememanager.ApplyThemeForScreenshot");
-            intent.putExtra("theme_file_path", themePath);
+            intent.setComponent(new ComponentName(THEME_MANAGER_PKG, THEME_APPLY_ACTIVITY));
+            intent.putExtra("theme_file_path", SNAPSHOT_PATH);
             intent.putExtra("ver2_step", "ver2_step_apply");
             intent.putExtra("api_called_from", "com.miui.themestore");
             intent.putExtra("theme_apply_flags", 1);
-            startActivity(intent);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            requireContext().startActivity(intent);
+            Log.d(TAG_LOG, "ApplyThemeForScreenshot launched");
         } catch (Exception e) {
-            Toast.makeText(requireContext(), R.string.apply_theme_failed,
-                    Toast.LENGTH_SHORT).show();
+            Log.e(TAG_LOG, "Failed to launch ApplyThemeForScreenshot", e);
+            if (isAdded()) {
+                Toast.makeText(requireContext(), R.string.apply_theme_failed,
+                        Toast.LENGTH_SHORT).show();
+            }
         }
-    }
-
-    private static String stripExtension(String filename) {
-        int dot = filename.lastIndexOf('.');
-        return dot > 0 ? filename.substring(0, dot) : filename;
     }
 
     @Override

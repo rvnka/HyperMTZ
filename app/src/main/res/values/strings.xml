@@ -31,7 +31,6 @@
     <string name="btn_install_theme">Install Theme</string>
 
     <!-- Overflow menu -->
-    <string name="menu_restart_system_ui">Restart System UI</string>
     <string name="menu_run_command">Run Command</string>
     <string name="menu_about">About</string>
 
@@ -79,7 +78,9 @@
     <string name="shizuku_not_connected">Shizuku is not connected</string>
 
     <!-- Errors -->
-    <string name="error_restart_system_ui">Failed to restart System UI</string>
+    <string name="error_not_mtz_file">Please select a .mtz theme file</string>
+    <string name="error_copy_cache">Failed to read selected file</string>
+    <string name="preparing_file">Preparing file…</string>
 
     <!-- Intercept status -->
     <string name="intercept_none_yet">No intercepts yet</string>

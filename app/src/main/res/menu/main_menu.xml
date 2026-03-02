@@ -3,11 +3,6 @@
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
     <item
-        android:id="@+id/action_restart_system_ui"
-        android:title="@string/menu_restart_system_ui"
-        app:showAsAction="never" />
-
-    <item
         android:id="@+id/action_run_command"
         android:title="@string/menu_run_command"
         app:showAsAction="never" />

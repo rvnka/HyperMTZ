@@ -1,12 +1,8 @@
 package app.hypermtz.ui;
 
 import android.app.Application;
-import android.content.ComponentName;
 import android.content.Context;
-import android.content.Intent;
 import android.content.SharedPreferences;
-import android.os.RemoteException;
-import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -21,8 +17,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-
-import app.hypermtz.BuildConfig;
 import app.hypermtz.IPrivilegedService;
 import app.hypermtz.R;
 import app.hypermtz.service.ThemeInterceptService;
@@ -36,10 +30,7 @@ import app.hypermtz.util.ShizukuServiceManager;
  *  1. isRunning() (binder IPC) moved from main thread to ioExecutor — avoids
  *     UI jank on every refresh() / onResume call.
  *  2. Added shizukuState LiveData (ShizukuState enum) for granular UI feedback.
- *  3. restartSystemUi() — removed broken InstrumentationActivityInvoker
- *     primary path (internal test class never present in production SystemUI).
- *     Now uses "am force-stop com.android.systemui" which works reliably via ADB.
- *  4. Implements ShizukuServiceManager.Callback.onStateChanged() so the Shizuku
+ *  3. Implements ShizukuServiceManager.Callback.onStateChanged() so the Shizuku
  *     card can show UNAVAILABLE / PERMISSION_NEEDED / CONNECTING / CONNECTED.
  */
 public class MainViewModel extends AndroidViewModel
@@ -79,8 +70,7 @@ public class MainViewModel extends AndroidViewModel
 
     @Nullable private IPrivilegedService privilegedService;
     private final ShizukuServiceManager shizukuManager;
-    private final ExecutorService ioExecutor     = Executors.newSingleThreadExecutor();
-    private final ExecutorService actionExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -95,7 +85,6 @@ public class MainViewModel extends AndroidViewModel
     protected void onCleared() {
         shizukuManager.removeListeners();
         ioExecutor.shutdownNow();
-        actionExecutor.shutdownNow();
         super.onCleared();
     }
 
@@ -172,39 +161,6 @@ public class MainViewModel extends AndroidViewModel
         refreshThemeStatus();
     }
 
-    /**
-     * Restarts SystemUI.
-     *
-     * FIX: Removed the broken InstrumentationActivityInvoker$BootstrapActivity
-     * primary strategy. That class is an internal test framework class and does
-     * not exist in production SystemUI builds, so it always threw an exception
-     * and fell through to the killall fallback anyway.
-     *
-     * Now uses "am force-stop" which is reliable via ADB/root privilege and
-     * is the standard approach used by MIUI/HyperOS tools.
-     */
-    public void restartSystemUi() {
-        IPrivilegedService svc = privilegedService;
-        if (svc == null) {
-            _toastEvent.postValue(new Event<>(
-                    getApplication().getString(R.string.shizuku_not_connected)));
-            return;
-        }
-        actionExecutor.submit(() -> {
-            try {
-                // Primary: force-stop via ActivityManager — clean and reliable
-                boolean ok = svc.execute(new String[]{"am", "force-stop", "com.android.systemui"});
-                if (!ok) {
-                    // Fallback: killall (requires root, may not work with ADB-only Shizuku)
-                    svc.execute(new String[]{"killall", "com.android.systemui"});
-                }
-            } catch (RemoteException e) {
-                Log.e(TAG, "Failed to restart SystemUI", e);
-                _toastEvent.postValue(new Event<>(
-                        getApplication().getString(R.string.error_restart_system_ui)));
-            }
-        });
-    }
 
     // ── Private helpers ───────────────────────────────────────────────────────
 

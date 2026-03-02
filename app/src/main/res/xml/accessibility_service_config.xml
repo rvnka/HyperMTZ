@@ -1,27 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    FIX: Reduced accessibilityEventTypes from typeAllMask to typeWindowStateChanged.
+    canRetrieveWindowContent="true" is REQUIRED for onAccessibilityEvent to read
+    the node tree and click ThemeManager approval buttons. Without it, the service
+    receives events but getRootInActiveWindow() always returns null.
 
-    Original used typeAllMask, which caused the AccessibilityService to receive
-    EVERY accessibility event on the device (window changes, view clicks, text
-    input, scroll events, etc.). This caused unnecessary battery drain and CPU
-    work since HyperMTZ's service does not consume any accessibility events —
-    it only uses the AccessibilityService to stay alive and intercept broadcasts.
+    packageNames restricts events to ThemeManager only (battery-friendly). The
+    broadcast receiver for miui.intent.action.CHECK_TIME_UP is unaffected by this
+    filter — it receives system-wide broadcasts independently.
 
-    canRetrieveWindowContent and canRequestFilterKeyEvents were also enabled
-    unnecessarily, triggering elevated permission warnings on Android 13+ and
-    potentially causing Google Play / system security concerns.
-
-    Minimal config: typeWindowStateChanged is the lowest-impact event type that
-    keeps the service reliably active across all MIUI/HyperOS versions.
+    typeWindowContentChanged is needed to detect when ThemeManager's dialog content
+    changes (e.g. button text becomes visible after an animation).
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/accessibility_service_description"
-    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:packageNames="com.android.thememanager,com.miui.thememanager"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:notificationTimeout="100"
     android:accessibilityFlags="flagDefault"
-    android:canRetrieveWindowContent="false"
+    android:canRetrieveWindowContent="true"
     android:canRequestTouchExplorationMode="false"
     android:canRequestFilterKeyEvents="false"
     android:settingsActivity="app.hypermtz.MainActivity" />
