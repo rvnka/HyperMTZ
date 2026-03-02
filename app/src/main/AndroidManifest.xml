@@ -2,19 +2,37 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" 
+    <!-- Storage — legacy paths for Android ≤ 10 -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"  android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32"
+        tools:ignore="ScopedStorage" />
+    <!--
+        MANAGE_EXTERNAL_STORAGE — declared so Google Play is aware, but NOT
+        requested at runtime. The ZWS (Zero Width Space) path trick used by
+        FileApplyDialogFragment writes to the ThemeManager data directory
+        without requiring this permission on Android 11+.
+    -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
+    <!-- Notification — required to show the KeepAliveService notification on Android 13+ -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Foreground service — required for KeepAliveService -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- Shizuku -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
-    
+
     <queries>
         <package android:name="moe.shizuku.privileged.api" />
+        <package android:name="com.android.thememanager" />
     </queries>
 
     <application
         android:allowBackup="true"
+        android:name=".HyperMTZApplication"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
@@ -35,12 +53,8 @@
         </activity>
 
         <!--
-            PrivilegedService: Shizuku UserService declaration.
-            Shizuku loads this class directly via ClassLoader (not Android's normal
-            Service binding), so it does NOT extend android.app.Service.
-            tools:ignore="Instantiatable" suppresses the Lint false-positive.
-            android:permission protects this entry from being invoked by other apps.
-            android:exported="true" is required by Shizuku's bindUserService() call.
+            PrivilegedService: Shizuku UserService.
+            Fallback for file operations when the ZWS trick is unavailable.
         -->
         <service
             android:name=".service.PrivilegedService"
@@ -48,18 +62,52 @@
             android:exported="true"
             tools:ignore="Instantiatable" />
 
+        <!--
+            ThemeInterceptService: Accessibility Service + broadcast interceptor.
+
+            android:process=":intercept" — runs in a SEPARATE process from the
+            main UI. MIUI's memory manager cannot kill the service when the main
+            process is killed (e.g. when the user swipes away the app). The
+            AccessibilityService itself gets its own lifecycle independent of
+            MainActivity. KeepAliveService (below) also runs in :intercept,
+            holding a foreground notification that further prevents MIUI from
+            terminating the process.
+        -->
         <service
             android:name=".service.ThemeInterceptService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:label="@string/app_name"
             android:description="@string/accessibility_service_description"
-            android:exported="true">
+            android:exported="true"
+            android:process=":intercept"
+            android:foregroundServiceType="specialUse">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="accessibility_keep_alive" />
+        </service>
+
+        <!--
+            KeepAliveService: persistent foreground notification in :intercept.
+
+            Shares the ":intercept" process with ThemeInterceptService. By
+            holding a foreground notification, it prevents MIUI from killing
+            the process after the screen turns off. Started/stopped by
+            ThemeInterceptService on connect/disconnect.
+        -->
+        <service
+            android:name=".service.KeepAliveService"
+            android:exported="false"
+            android:process=":intercept"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="intercept_keep_alive" />
         </service>
 
         <provider

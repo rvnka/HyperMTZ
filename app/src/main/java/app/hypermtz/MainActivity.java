@@ -1,14 +1,13 @@
 package app.hypermtz;
 
 import android.content.BroadcastReceiver;
-import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.provider.Settings;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -28,21 +27,33 @@ import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.card.MaterialCardView;
 import com.google.android.material.color.DynamicColors;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
+import app.hypermtz.service.KeepAliveService;
 import app.hypermtz.service.ThemeInterceptService;
 import app.hypermtz.ui.MainViewModel;
 import app.hypermtz.ui.dialog.AboutDialogFragment;
 import app.hypermtz.ui.dialog.CommandDialogFragment;
 import app.hypermtz.ui.dialog.FileApplyDialogFragment;
 import app.hypermtz.ui.dialog.SetupGuideDialogFragment;
+import app.hypermtz.util.PreferenceUtil;
 import app.hypermtz.util.ShizukuServiceManager;
 
+/**
+ * Main UI entry point.
+ *
+ * Additions ported from ThemeStore's MainActivity.kt:
+ *
+ *  1. Optimization mode check — if "optimization_mode_enabled" is true AND the
+ *     accessibility service is running, the main process exits immediately to
+ *     reduce RAM. When the user taps the notification action to exit optimization
+ *     mode, a broadcast is received here that re-enables normal startup.
+ *
+ *  2. ACTION_EXIT_OPTIMIZATION broadcast receiver — receives the intent sent by
+ *     the notification action button (KeepAliveService.ACTION_EXIT_OPTIMIZATION).
+ *     Sets "optimization_mode_enabled"=false and shows a confirmation toast.
+ *
+ *  3. Deferred notification-permission request moved to onResume() to avoid
+ *     showing the dialog before the activity is fully visible.
+ */
 public class MainActivity extends AppCompatActivity {
 
     private MainViewModel viewModel;
@@ -53,18 +64,12 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvShizukuStatus;
     private TextView tvShizukuDetail;
 
-    private boolean setupGuideShownThisSession = false;
-    private boolean storagePermissionRequested = false;
+    private boolean setupGuideShownThisSession  = false;
+    private boolean storagePermissionRequested  = false;
 
-    /**
-     * Single-thread executor for copying SAF content:// URI to the app's cache
-     * directory before passing the local path to PrivilegedService.copyFile().
-     * PrivilegedService (running as ADB shell/root) can read from the app's
-     * external cache dir (/sdcard/Android/data/app.hypermtz/cache/) but cannot
-     * dereference content:// URIs, which require ContentResolver in the app process.
-     */
-    private final ExecutorService copyExecutor = Executors.newSingleThreadExecutor();
+    // ── Broadcast receivers ───────────────────────────────────────────────────
 
+    /** Refreshes UI when ThemeInterceptService state changes. */
     private final BroadcastReceiver serviceStateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -73,23 +78,69 @@ public class MainActivity extends AppCompatActivity {
     };
 
     /**
-     * SAF file picker — replaces the old custom FilePickerDialogFragment.
+     * Receives ACTION_EXIT_OPTIMIZATION from KeepAliveService notification action.
      *
-     * Using ACTION_OPEN_DOCUMENT (not GET_CONTENT) so the app gets a
-     * persistable URI with long-term read access, and the system file picker
-     * is used directly without requiring MANAGE_EXTERNAL_STORAGE on every device.
-     *
-     * MIME type "*\/*" shows all files; most MIUI file managers display .mtz files.
-     * We validate the extension in the result callback.
+     * Ported from ThemeStore's MainActivity: disables optimization mode and shows
+     * a toast, then restarts MainActivity (this) so the UI is visible again.
      */
+    private final BroadcastReceiver exitOptimizationReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (!KeepAliveService.ACTION_EXIT_OPTIMIZATION.equals(intent.getAction())) return;
+            PreferenceUtil.setBoolean("optimization_mode_enabled", false);
+            PreferenceUtil.setBoolean("optimization_mode_just_exited", true);
+            // Restart this activity so the UI appears.
+            Intent relaunch = new Intent(MainActivity.this, MainActivity.class);
+            relaunch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            startActivity(relaunch);
+        }
+    };
+
+    // ── SAF file picker ───────────────────────────────────────────────────────
+
     private final ActivityResultLauncher<String[]> pickThemeLauncher =
             registerForActivityResult(new ActivityResultContracts.OpenDocument(),
                     this::onThemeFilePicked);
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         DynamicColors.applyToActivityIfAvailable(this);
+
+        // ── Optimization mode check (ported from ThemeStore) ──────────────────
+        //
+        // If the user previously tapped "Disable optimization" in the notification,
+        // optimization_mode_just_exited will be true — show a toast and continue
+        // normally.
+        //
+        // Otherwise: if optimization_mode_enabled is true AND the accessibility
+        // service is already running, exit the main process to save RAM. The
+        // service keeps running in :intercept — only the UI process exits.
+        boolean justExited = PreferenceUtil.getBoolean("optimization_mode_just_exited", false);
+        if (justExited) {
+            PreferenceUtil.setBoolean("optimization_mode_just_exited", false);
+            Toast.makeText(this,
+                    getString(R.string.optimization_mode_disabled_toast),
+                    Toast.LENGTH_SHORT).show();
+        } else {
+            boolean optimizationMode = PreferenceUtil.getBoolean("optimization_mode_enabled", false);
+            if (optimizationMode) {
+                boolean accessibilityRunning = ThemeInterceptService.isRunning(this);
+                if (accessibilityRunning) {
+                    // Accessibility service is active — no need to keep the UI process.
+                    finish();
+                    android.os.Process.killProcess(android.os.Process.myPid());
+                    return;
+                } else {
+                    // Accessibility not running — auto-disable optimization mode so
+                    // the user sees the setup guide and can re-enable the service.
+                    PreferenceUtil.setBoolean("optimization_mode_enabled", false);
+                }
+            }
+        }
+
         setContentView(R.layout.activity_main);
 
         MaterialToolbar toolbar = findViewById(R.id.toolbar);
@@ -119,6 +170,7 @@ public class MainActivity extends AppCompatActivity {
         btnInstall.setOnClickListener(v -> openFilePicker());
 
         registerServiceStateReceiver();
+        registerExitOptimizationReceiver();
     }
 
     @Override
@@ -127,26 +179,14 @@ public class MainActivity extends AppCompatActivity {
 
         if (!storagePermissionRequested) {
             storagePermissionRequested = true;
-            // MANAGE_EXTERNAL_STORAGE is needed by computeThemeStatus() to read
-            // /sdcard/Android/data/com.android.thememanager/files/snapshot/ —
-            // without it, File.listFiles() returns null on Android 11+ (scoped
-            // storage) and the status card always shows "No theme installed yet"
-            // even after a successful install.
-            // On Android < 11 the legacy READ/WRITE_EXTERNAL_STORAGE permissions
-            // (declared in the manifest with maxSdkVersion=32) are sufficient.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
-                    && !Environment.isExternalStorageManager()) {
-                try {
-                    Intent intent = new Intent(
-                            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                            Uri.parse("package:" + getPackageName()));
-                    startActivity(intent);
-                } catch (Exception e) {
-                    // Fallback: open the generic all-files-access settings page.
-                    try {
-                        startActivity(new Intent(
-                                Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
-                    } catch (Exception ignored) {}
+            // Android 13+: request notification permission for KeepAliveService.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (ContextCompat.checkSelfPermission(this,
+                        android.Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(
+                            new String[]{android.Manifest.permission.POST_NOTIFICATIONS},
+                            1003);
                 }
             }
         }
@@ -165,8 +205,8 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
-        try { unregisterReceiver(serviceStateReceiver); } catch (Exception ignored) {}
-        copyExecutor.shutdownNow();
+        try { unregisterReceiver(serviceStateReceiver);     } catch (Exception ignored) {}
+        try { unregisterReceiver(exitOptimizationReceiver); } catch (Exception ignored) {}
         super.onDestroy();
     }
 
@@ -187,7 +227,7 @@ public class MainActivity extends AppCompatActivity {
         return super.onOptionsItemSelected(item);
     }
 
-    // ── ViewModel observers ────────────────────────────────────────────────────
+    // ── ViewModel observers ───────────────────────────────────────────────────
 
     private void observeViewModel() {
         viewModel.serviceRunning.observe(this, running ->
@@ -245,79 +285,24 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    // ── File picker ────────────────────────────────────────────────────────────
+    // ── File picker ───────────────────────────────────────────────────────────
 
     private void openFilePicker() {
-        if (!viewModel.isShizukuAvailable()) {
-            Toast.makeText(this, R.string.shizuku_not_connected, Toast.LENGTH_SHORT).show();
-            return;
-        }
-        // Open system file picker — shows all files (*/*).
-        // The result is handled in onThemeFilePicked().
         pickThemeLauncher.launch(new String[]{"*/*"});
     }
 
-    /**
-     * Called when the user selects a file from the system file picker.
-     *
-     * The selected {@code uri} is a {@code content://} URI. PrivilegedService runs
-     * in a different process as ADB shell and cannot call ContentResolver, so we
-     * must copy the bytes to a local cache file first, then hand the absolute path
-     * to FileApplyDialogFragment which passes it to PrivilegedService.copyFile().
-     *
-     * We use {@code getExternalCacheDir()} (on sdcard) rather than {@code getCacheDir()}
-     * (on /data/data/) because it is accessible by ADB shell on all MIUI versions
-     * without relying on SELinux policy for /data/data/<package>/.
-     */
     private void onThemeFilePicked(@Nullable Uri uri) {
         if (uri == null) return;
-
         String filename = getFilenameFromUri(uri);
         if (filename == null || !filename.toLowerCase(java.util.Locale.ROOT).endsWith(".mtz")) {
             Toast.makeText(this, R.string.error_not_mtz_file, Toast.LENGTH_SHORT).show();
             return;
         }
-
-        Toast.makeText(this, R.string.preparing_file, Toast.LENGTH_SHORT).show();
-
-        copyExecutor.execute(() -> {
-            File outFile = null;
-            try {
-                File cacheDir = getExternalCacheDir();
-                if (cacheDir == null) cacheDir = getCacheDir();
-                outFile = new File(cacheDir, filename);
-
-                ContentResolver cr = getContentResolver();
-                try (InputStream in = cr.openInputStream(uri);
-                     FileOutputStream out = new FileOutputStream(outFile)) {
-                    if (in == null) throw new IOException("Cannot open URI: " + uri);
-                    byte[] buf = new byte[65536];
-                    int n;
-                    while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
-                    out.flush();
-                }
-
-                final String path = outFile.getAbsolutePath();
-                runOnUiThread(() -> {
-                    if (!isFinishing()) showApplyDialog(path);
-                });
-            } catch (Exception e) {
-                final File failedFile = outFile;
-                runOnUiThread(() -> {
-                    Toast.makeText(this, R.string.error_copy_cache, Toast.LENGTH_SHORT).show();
-                });
-                if (failedFile != null) failedFile.delete();
-            }
-        });
+        showApplyDialog(uri.toString(), filename);
     }
 
-    /**
-     * Extracts the display filename from a content:// URI using the ContentResolver.
-     * Falls back to the last path segment if the cursor query fails.
-     */
     @Nullable
     private String getFilenameFromUri(Uri uri) {
-        // Try ContentResolver first (works for most storage providers)
         try (android.database.Cursor cursor = getContentResolver().query(
                 uri,
                 new String[]{android.provider.OpenableColumns.DISPLAY_NAME},
@@ -327,8 +312,6 @@ public class MainActivity extends AppCompatActivity {
                 if (name != null && !name.isEmpty()) return name;
             }
         } catch (Exception ignored) {}
-
-        // Fallback: last path segment of the URI
         String path = uri.getLastPathSegment();
         if (path != null) {
             int slash = path.lastIndexOf('/');
@@ -337,15 +320,15 @@ public class MainActivity extends AppCompatActivity {
         return null;
     }
 
-    private void showApplyDialog(String filePath) {
+    private void showApplyDialog(String uriString, String fileName) {
         FragmentManager fm = getSupportFragmentManager();
         if (fm.findFragmentByTag(FileApplyDialogFragment.TAG) == null) {
-            FileApplyDialogFragment.newInstance(filePath)
+            FileApplyDialogFragment.newInstance(uriString, fileName)
                     .show(fm, FileApplyDialogFragment.TAG);
         }
     }
 
-    // ── Shizuku card ───────────────────────────────────────────────────────────
+    // ── Shizuku card ──────────────────────────────────────────────────────────
 
     private void onShizukuCardClicked() {
         ShizukuServiceManager.ShizukuState state = viewModel.shizukuState.getValue();
@@ -369,11 +352,21 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ── Utilities ──────────────────────────────────────────────────────────────
+    // ── Utilities ─────────────────────────────────────────────────────────────
 
     private void registerServiceStateReceiver() {
         IntentFilter filter = new IntentFilter(ThemeInterceptService.ACTION_STATE_CHANGED);
         ContextCompat.registerReceiver(this, serviceStateReceiver, filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED);
+    }
+
+    /**
+     * Registers the receiver for ACTION_EXIT_OPTIMIZATION.
+     * Ported from ThemeStore MainActivity.
+     */
+    private void registerExitOptimizationReceiver() {
+        IntentFilter filter = new IntentFilter(KeepAliveService.ACTION_EXIT_OPTIMIZATION);
+        ContextCompat.registerReceiver(this, exitOptimizationReceiver, filter,
                 ContextCompat.RECEIVER_NOT_EXPORTED);
     }
 

@@ -180,16 +180,23 @@ public class MainViewModel extends AndroidViewModel
     }
 
     private String computeThemeStatus() {
-        File themeDir = new File("/data/system/theme/compatibility-v12");
-        if (!themeDir.isDirectory() || themeDir.listFiles() == null) {
-            themeDir = new File("/sdcard/Android/data/com.android.thememanager/files/snapshot");
-        }
-        if (themeDir.isDirectory() && themeDir.listFiles() != null) {
-            String modTime = TIME_FMT.format(
-                    Instant.ofEpochMilli(themeDir.lastModified())
-                           .atZone(ZoneId.systemDefault())
-                           .toLocalDateTime());
-            return getApplication().getString(R.string.theme_installed_at, modTime);
+        // Check paths in priority order:
+        // 1. ZWS/ThemeStore method → .../files/theme/安装主题.mtz  (exact ThemeStore filename)
+        // 2. Legacy snapshot path  → .../files/snapshot/  (directory mtime)
+        // 3. MIUI 12+ system dir  → /data/system/theme/compatibility-v12/
+        File[] candidates = {
+            new File("/sdcard/Android/data/com.android.thememanager/files/theme/安装主题.mtz"),
+            new File("/sdcard/Android/data/com.android.thememanager/files/snapshot"),
+            new File("/data/system/theme/compatibility-v12"),
+        };
+        for (File f : candidates) {
+            if (f.exists() && f.lastModified() > 0) {
+                String modTime = TIME_FMT.format(
+                        Instant.ofEpochMilli(f.lastModified())
+                               .atZone(ZoneId.systemDefault())
+                               .toLocalDateTime());
+                return getApplication().getString(R.string.theme_installed_at, modTime);
+            }
         }
         return getApplication().getString(R.string.theme_not_installed);
     }
