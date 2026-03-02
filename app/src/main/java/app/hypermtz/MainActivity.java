@@ -42,17 +42,15 @@ import app.hypermtz.util.ShizukuServiceManager;
  *
  * Additions ported from ThemeStore's MainActivity.kt:
  *
- *  1. Optimization mode check — if "optimization_mode_enabled" is true AND the
- *     accessibility service is running, the main process exits immediately to
- *     reduce RAM. When the user taps the notification action to exit optimization
- *     mode, a broadcast is received here that re-enables normal startup.
+ *  1. Optimization mode — if "optimization_mode_enabled"=true AND the accessibility
+ *     service is running, the main process exits to save RAM (service keeps running
+ *     in :intercept). Re-enabled by tapping the notification action button, which
+ *     relaunches MainActivity with EXTRA_EXIT_OPTIMIZATION=true.
  *
- *  2. ACTION_EXIT_OPTIMIZATION broadcast receiver — receives the intent sent by
- *     the notification action button (KeepAliveService.ACTION_EXIT_OPTIMIZATION).
- *     Sets "optimization_mode_enabled"=false and shows a confirmation toast.
- *
- *  3. Deferred notification-permission request moved to onResume() to avoid
- *     showing the dialog before the activity is fully visible.
+ *  2. EXTRA_EXIT_OPTIMIZATION handling — checked in onCreate() before setContentView.
+ *     Disables optimization mode, shows a confirmation toast, then continues normally.
+ *     Uses Activity intent extras (not a broadcast) so it works even when the main
+ *     process was previously killed.
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -64,40 +62,18 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvShizukuStatus;
     private TextView tvShizukuDetail;
 
-    private boolean setupGuideShownThisSession  = false;
-    private boolean storagePermissionRequested  = false;
+    private boolean setupGuideShownThisSession = false;
+    private boolean permissionRequested        = false;
 
-    // ── Broadcast receivers ───────────────────────────────────────────────────
-
-    /** Refreshes UI when ThemeInterceptService state changes. */
+    // Refreshes UI when ThemeInterceptService state changes.
     private final BroadcastReceiver serviceStateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            viewModel.refresh();
+            if (viewModel != null) viewModel.refresh();
         }
     };
 
-    /**
-     * Receives ACTION_EXIT_OPTIMIZATION from KeepAliveService notification action.
-     *
-     * Ported from ThemeStore's MainActivity: disables optimization mode and shows
-     * a toast, then restarts MainActivity (this) so the UI is visible again.
-     */
-    private final BroadcastReceiver exitOptimizationReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (!KeepAliveService.ACTION_EXIT_OPTIMIZATION.equals(intent.getAction())) return;
-            PreferenceUtil.setBoolean("optimization_mode_enabled", false);
-            PreferenceUtil.setBoolean("optimization_mode_just_exited", true);
-            // Restart this activity so the UI appears.
-            Intent relaunch = new Intent(MainActivity.this, MainActivity.class);
-            relaunch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            startActivity(relaunch);
-        }
-    };
-
-    // ── SAF file picker ───────────────────────────────────────────────────────
-
+    // SAF file picker — picks any file; .mtz validated in callback.
     private final ActivityResultLauncher<String[]> pickThemeLauncher =
             registerForActivityResult(new ActivityResultContracts.OpenDocument(),
                     this::onThemeFilePicked);
@@ -109,53 +85,54 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         DynamicColors.applyToActivityIfAvailable(this);
 
-        // ── Optimization mode check (ported from ThemeStore) ──────────────────
+        // ── Handle EXTRA_EXIT_OPTIMIZATION ────────────────────────────────────
         //
-        // If the user previously tapped "Disable optimization" in the notification,
-        // optimization_mode_just_exited will be true — show a toast and continue
-        // normally.
-        //
-        // Otherwise: if optimization_mode_enabled is true AND the accessibility
-        // service is already running, exit the main process to save RAM. The
-        // service keeps running in :intercept — only the UI process exits.
-        boolean justExited = PreferenceUtil.getBoolean("optimization_mode_just_exited", false);
-        if (justExited) {
-            PreferenceUtil.setBoolean("optimization_mode_just_exited", false);
-            Toast.makeText(this,
-                    getString(R.string.optimization_mode_disabled_toast),
+        // The "Disable Optimization" notification button launches MainActivity with
+        // this extra set to true. We check it first — before the optimization-mode
+        // kill check — so we never accidentally re-kill ourselves after the user
+        // tapped the button.
+        if (getIntent() != null && getIntent().getBooleanExtra(
+                KeepAliveService.EXTRA_EXIT_OPTIMIZATION, false)) {
+            PreferenceUtil.setBoolean("optimization_mode_enabled", false);
+            Toast.makeText(this, R.string.optimization_mode_disabled_toast,
                     Toast.LENGTH_SHORT).show();
-        } else {
-            boolean optimizationMode = PreferenceUtil.getBoolean("optimization_mode_enabled", false);
-            if (optimizationMode) {
-                boolean accessibilityRunning = ThemeInterceptService.isRunning(this);
-                if (accessibilityRunning) {
-                    // Accessibility service is active — no need to keep the UI process.
-                    finish();
-                    android.os.Process.killProcess(android.os.Process.myPid());
-                    return;
-                } else {
-                    // Accessibility not running — auto-disable optimization mode so
-                    // the user sees the setup guide and can re-enable the service.
-                    PreferenceUtil.setBoolean("optimization_mode_enabled", false);
-                }
+            // Clear the extra so a config-change recreate doesn't re-show the toast.
+            getIntent().removeExtra(KeepAliveService.EXTRA_EXIT_OPTIMIZATION);
+        }
+
+        // ── Optimization mode kill check (ported from ThemeStore) ─────────────
+        //
+        // When enabled, exit the main UI process to conserve RAM. The accessibility
+        // service keeps running in the :intercept process.
+        if (PreferenceUtil.getBoolean("optimization_mode_enabled", false)) {
+            if (ThemeInterceptService.isRunning(this)) {
+                finish();
+                android.os.Process.killProcess(android.os.Process.myPid());
+                return; // unreachable, but keeps the compiler happy
+            } else {
+                // Accessibility not running — auto-disable so the user can re-set it up.
+                PreferenceUtil.setBoolean("optimization_mode_enabled", false);
             }
         }
+
+        // ── Normal startup ────────────────────────────────────────────────────
 
         setContentView(R.layout.activity_main);
 
         MaterialToolbar toolbar = findViewById(R.id.toolbar);
         setSupportActionBar(toolbar);
 
-        tvServiceStatus  = findViewById(R.id.tv_service_status);
-        tvConnectedTime  = findViewById(R.id.tv_service_connected_time);
-        tvInterceptTime  = findViewById(R.id.tv_last_intercept_time);
-        tvThemeTime      = findViewById(R.id.tv_theme_install_time);
-        tvShizukuStatus  = findViewById(R.id.tv_shizuku_status);
-        tvShizukuDetail  = findViewById(R.id.tv_shizuku_detail);
+        tvServiceStatus = findViewById(R.id.tv_service_status);
+        tvConnectedTime = findViewById(R.id.tv_service_connected_time);
+        tvInterceptTime = findViewById(R.id.tv_last_intercept_time);
+        tvThemeTime     = findViewById(R.id.tv_theme_install_time);
+        tvShizukuStatus = findViewById(R.id.tv_shizuku_status);
+        tvShizukuDetail = findViewById(R.id.tv_shizuku_detail);
 
         viewModel = new ViewModelProvider(this).get(MainViewModel.class);
         observeViewModel();
 
+        // Service card → open Accessibility Settings if not running.
         MaterialCardView cardService = findViewById(R.id.card_service_status);
         cardService.setOnClickListener(v -> {
             if (!ThemeInterceptService.isRunning(this)) {
@@ -170,30 +147,43 @@ public class MainActivity extends AppCompatActivity {
         btnInstall.setOnClickListener(v -> openFilePicker());
 
         registerServiceStateReceiver();
-        registerExitOptimizationReceiver();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        // Handle EXTRA_EXIT_OPTIMIZATION when the activity is already running
+        // (singleTop launchMode) and the notification button relaunches it.
+        if (intent != null && intent.getBooleanExtra(
+                KeepAliveService.EXTRA_EXIT_OPTIMIZATION, false)) {
+            PreferenceUtil.setBoolean("optimization_mode_enabled", false);
+            Toast.makeText(this, R.string.optimization_mode_disabled_toast,
+                    Toast.LENGTH_SHORT).show();
+            intent.removeExtra(KeepAliveService.EXTRA_EXIT_OPTIMIZATION);
+        }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
 
-        if (!storagePermissionRequested) {
-            storagePermissionRequested = true;
-            // Android 13+: request notification permission for KeepAliveService.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                if (ContextCompat.checkSelfPermission(this,
-                        android.Manifest.permission.POST_NOTIFICATIONS)
-                        != PackageManager.PERMISSION_GRANTED) {
-                    requestPermissions(
-                            new String[]{android.Manifest.permission.POST_NOTIFICATIONS},
-                            1003);
-                }
+        // Request notification permission once (Android 13+).
+        if (!permissionRequested) {
+            permissionRequested = true;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                    && ContextCompat.checkSelfPermission(this,
+                            android.Manifest.permission.POST_NOTIFICATIONS)
+                            != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(
+                        new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1003);
             }
         }
 
         viewModel.refresh();
         viewModel.retryShizuku();
 
+        // Show setup guide once per session if the service is not yet enabled.
         if (!setupGuideShownThisSession && !ThemeInterceptService.isRunning(this)) {
             setupGuideShownThisSession = true;
             FragmentManager fm = getSupportFragmentManager();
@@ -205,8 +195,7 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
-        try { unregisterReceiver(serviceStateReceiver);     } catch (Exception ignored) {}
-        try { unregisterReceiver(exitOptimizationReceiver); } catch (Exception ignored) {}
+        try { unregisterReceiver(serviceStateReceiver); } catch (Exception ignored) {}
         super.onDestroy();
     }
 
@@ -220,9 +209,9 @@ public class MainActivity extends AppCompatActivity {
     public boolean onOptionsItemSelected(MenuItem item) {
         int id = item.getItemId();
         if (id == R.id.action_run_command) {
-            showDialog(CommandDialogFragment.TAG, new CommandDialogFragment());
+            showDialogIfNotShown(CommandDialogFragment.TAG, new CommandDialogFragment());
         } else if (id == R.id.action_about) {
-            showDialog(AboutDialogFragment.TAG, new AboutDialogFragment());
+            showDialogIfNotShown(AboutDialogFragment.TAG, new AboutDialogFragment());
         }
         return super.onOptionsItemSelected(item);
     }
@@ -274,9 +263,7 @@ public class MainActivity extends AppCompatActivity {
         });
 
         viewModel.themeCopyRunning.observe(this, copying -> {
-            if (Boolean.TRUE.equals(copying)) {
-                tvThemeTime.setText(R.string.copying_theme_files);
-            }
+            if (Boolean.TRUE.equals(copying)) tvThemeTime.setText(R.string.copying_theme_files);
         });
 
         viewModel.toastEvent.observe(this, event -> {
@@ -298,57 +285,57 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, R.string.error_not_mtz_file, Toast.LENGTH_SHORT).show();
             return;
         }
-        showApplyDialog(uri.toString(), filename);
+        showDialogIfNotShown(FileApplyDialogFragment.TAG,
+                FileApplyDialogFragment.newInstance(uri.toString(), filename));
     }
 
     @Nullable
     private String getFilenameFromUri(Uri uri) {
-        try (android.database.Cursor cursor = getContentResolver().query(
-                uri,
+        try (android.database.Cursor c = getContentResolver().query(uri,
                 new String[]{android.provider.OpenableColumns.DISPLAY_NAME},
                 null, null, null)) {
-            if (cursor != null && cursor.moveToFirst()) {
-                String name = cursor.getString(0);
+            if (c != null && c.moveToFirst()) {
+                String name = c.getString(0);
                 if (name != null && !name.isEmpty()) return name;
             }
         } catch (Exception ignored) {}
-        String path = uri.getLastPathSegment();
-        if (path != null) {
-            int slash = path.lastIndexOf('/');
-            return slash >= 0 ? path.substring(slash + 1) : path;
+        String seg = uri.getLastPathSegment();
+        if (seg != null) {
+            int slash = seg.lastIndexOf('/');
+            return slash >= 0 ? seg.substring(slash + 1) : seg;
         }
         return null;
-    }
-
-    private void showApplyDialog(String uriString, String fileName) {
-        FragmentManager fm = getSupportFragmentManager();
-        if (fm.findFragmentByTag(FileApplyDialogFragment.TAG) == null) {
-            FileApplyDialogFragment.newInstance(uriString, fileName)
-                    .show(fm, FileApplyDialogFragment.TAG);
-        }
     }
 
     // ── Shizuku card ──────────────────────────────────────────────────────────
 
     private void onShizukuCardClicked() {
         ShizukuServiceManager.ShizukuState state = viewModel.shizukuState.getValue();
-        if (state == ShizukuServiceManager.ShizukuState.UNAVAILABLE) {
-            Intent launch = getPackageManager()
-                    .getLaunchIntentForPackage("moe.shizuku.privileged.api");
-            if (launch != null) {
-                startActivity(launch);
-            } else {
-                try {
-                    startActivity(new Intent(Intent.ACTION_VIEW,
-                            android.net.Uri.parse("https://shizuku.rikka.app/")));
-                } catch (Exception ignored) {}
-            }
-        } else if (state == ShizukuServiceManager.ShizukuState.PERMISSION_DENIED) {
-            Intent launch = getPackageManager()
-                    .getLaunchIntentForPackage("moe.shizuku.privileged.api");
-            if (launch != null) startActivity(launch);
-        } else if (state == ShizukuServiceManager.ShizukuState.PERMISSION_NEEDED) {
-            viewModel.retryShizuku();
+        if (state == null) return;
+
+        switch (state) {
+            case UNAVAILABLE:
+                Intent launchShizuku = getPackageManager()
+                        .getLaunchIntentForPackage("moe.shizuku.privileged.api");
+                if (launchShizuku != null) {
+                    startActivity(launchShizuku);
+                } else {
+                    try {
+                        startActivity(new Intent(Intent.ACTION_VIEW,
+                                Uri.parse("https://shizuku.rikka.app/")));
+                    } catch (Exception ignored) {}
+                }
+                break;
+            case PERMISSION_DENIED:
+                Intent openShizuku = getPackageManager()
+                        .getLaunchIntentForPackage("moe.shizuku.privileged.api");
+                if (openShizuku != null) startActivity(openShizuku);
+                break;
+            case PERMISSION_NEEDED:
+                viewModel.retryShizuku();
+                break;
+            default:
+                break;
         }
     }
 
@@ -360,17 +347,7 @@ public class MainActivity extends AppCompatActivity {
                 ContextCompat.RECEIVER_NOT_EXPORTED);
     }
 
-    /**
-     * Registers the receiver for ACTION_EXIT_OPTIMIZATION.
-     * Ported from ThemeStore MainActivity.
-     */
-    private void registerExitOptimizationReceiver() {
-        IntentFilter filter = new IntentFilter(KeepAliveService.ACTION_EXIT_OPTIMIZATION);
-        ContextCompat.registerReceiver(this, exitOptimizationReceiver, filter,
-                ContextCompat.RECEIVER_NOT_EXPORTED);
-    }
-
-    private void showDialog(String tag, androidx.fragment.app.DialogFragment fragment) {
+    private void showDialogIfNotShown(String tag, androidx.fragment.app.DialogFragment fragment) {
         FragmentManager fm = getSupportFragmentManager();
         if (fm.findFragmentByTag(tag) == null) {
             fragment.show(fm, tag);

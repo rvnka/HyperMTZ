@@ -105,6 +105,10 @@ public class PrivilegedService extends IPrivilegedService.Stub {
                 out.write(buffer, 0, bytesRead);
             }
             out.flush();
+            // Make the copied file world-readable so ThemeManager (which runs as its own
+            // UID) can read it even though this service runs as shell (ADB) or root.
+            //noinspection ResultOfMethodCallIgnored
+            destination.setReadable(true, false);
             return true;
         } catch (IOException e) {
             Log.e(TAG, "copyFile failed: " + sourcePath + " -> " + destinationPath, e);

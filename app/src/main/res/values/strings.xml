@@ -14,13 +14,16 @@
     <string name="label_connected_at">Connected at</string>
     <string name="label_never">—</string>
 
-    <!-- Shizuku states (granular) -->
+    <!-- Shizuku states -->
     <string name="shizuku_connected">Connected</string>
     <string name="shizuku_connecting">Connecting…</string>
     <string name="shizuku_permission_needed">Permission required</string>
+    <string name="shizuku_permission_denied">Shizuku permission denied</string>
+    <string name="shizuku_permission_permanent_denial">Shizuku permission permanently denied — grant it in app settings</string>
     <string name="shizuku_disconnected">Not available</string>
+    <string name="shizuku_not_connected">Shizuku not connected — theme install will use ZWS method</string>
 
-    <!-- Shizuku detail lines shown below the state label -->
+    <!-- Shizuku detail lines -->
     <string name="shizuku_detail_connected">Privileged service active</string>
     <string name="shizuku_detail_connecting">Binding to privileged service…</string>
     <string name="shizuku_detail_permission_needed">Tap to grant permission in Shizuku</string>
@@ -70,36 +73,10 @@
     <string name="about_title">HyperMTZ</string>
     <string name="about_author">by Rinn (@rvnka)</string>
     <string name="about_version">Version %1$s</string>
-    <string name="about_description">Patches MIUI theme authorization checks using an Accessibility Service and Shizuku for privileged file operations.</string>
-
-    <!-- Permissions -->
-    <string name="permission_storage_denied">Storage permission denied — some features may not work</string>
-    <string name="shizuku_permission_denied">Shizuku permission denied</string>
-    <string name="shizuku_not_connected">Shizuku is not connected</string>
-
-    <!-- Errors -->
-    <string name="error_not_mtz_file">Please select a .mtz theme file</string>
-
-    <!-- Intercept status -->
-    <string name="intercept_none_yet">No intercepts yet</string>
-    <string name="intercept_last">Last intercept: %1$s</string>
-
-    <!-- Extended Shizuku -->
-    <string name="shizuku_permission_permanent_denial">Shizuku permission permanently denied — grant it in app settings</string>
-
-    <!-- Accessibility service -->
-    <string name="accessibility_service_description">Dynamically registers a broadcast receiver (priority 1000) via accessibility service, to receive MIUI theme-check and screen-off broadcasts first. Runs in a separate process with a foreground service to resist MIUI background kill. Note: CHECK_TIME_UP may be a regular broadcast on some ROMs — interception is attempted but cannot be guaranteed to block delivery in all cases.</string>
-
-    <!-- About dialog -->
-    <string name="about_title">HyperMTZ</string>
-    <string name="about_author">by Rinn (@rvnka)</string>
-    <string name="about_version">Version %1$s</string>
     <string name="about_description">Patches MIUI/HyperOS theme authorization using Accessibility Service. Uses ThemeStore ZWS path trick (no Shizuku needed). Shizuku provides privileged fallback for file copy only.</string>
 
     <!-- Permissions -->
     <string name="permission_storage_denied">Storage permission denied — some features may not work</string>
-    <string name="shizuku_permission_denied">Shizuku permission denied</string>
-    <string name="shizuku_not_connected">Shizuku not connected — theme install will use ZWS method</string>
 
     <!-- Errors -->
     <string name="error_not_mtz_file">Please select a .mtz theme file</string>
@@ -108,18 +85,16 @@
     <string name="intercept_none_yet">No intercepts yet</string>
     <string name="intercept_last">Last intercept: %1$s</string>
 
-    <!-- Extended Shizuku -->
-    <string name="shizuku_permission_permanent_denial">Shizuku permission permanently denied — grant it in app settings</string>
+    <!-- Accessibility service -->
+    <string name="accessibility_service_description">Dynamically registers a broadcast receiver (priority 1000) via accessibility service, to receive MIUI theme-check and screen-off broadcasts first. Runs in a separate process with a foreground service to resist MIUI background kill. Note: CHECK_TIME_UP may be a regular broadcast on some ROMs — interception is attempted but cannot be guaranteed to block delivery in all cases.</string>
 
     <!-- KeepAliveService notification -->
     <string name="keep_alive_notification_title">HyperMTZ — Protecting Theme</string>
     <string name="keep_alive_waiting">Waiting for MIUI theme check broadcast…</string>
     <string name="keep_alive_last_intercept">Last intercept: %1$s</string>
+    <string name="keep_alive_stats">Intercepts: %1$d  |  Installs: %2$d</string>
     <string name="keep_alive_channel_name">Theme Protection</string>
     <string name="keep_alive_channel_desc">Shows when HyperMTZ is actively intercepting MIUI theme checks</string>
-
-    <!-- Statistics notification (ported from ThemeStore) -->
-    <string name="keep_alive_stats">Intercepts: %1$d  |  Installs: %2$d</string>
 
     <!-- Optimization mode (ported from ThemeStore) -->
     <string name="optimization_mode_notification_action">Disable Optimization</string>

@@ -1,7 +1,6 @@
 package app.hypermtz.util;
 
 import android.content.Context;
-import android.os.Environment;
 import android.util.Log;
 
 import java.io.BufferedReader;
@@ -17,25 +16,18 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Application-wide log manager.
+ * Application-wide structured log manager — ported from ThemeStore's LogManager.kt.
  *
- * Ported from ThemeStore's LogManager.kt.
+ * Writes log entries to {filesDir}/app_logs.txt and tracks statistics (intercept count,
+ * install count) in {@link PreferenceUtil}. All disk I/O runs on a background executor.
  *
- * Writes structured log entries to a private file ({@code files/app_logs.txt}).
- * Tracks statistics (intercept count, install count) via {@link PreferenceUtil}.
- * All disk I/O runs on a dedicated single-thread executor — never on the main
- * thread. The executor is a process-global singleton; callers do not need to
- * manage its lifecycle.
- *
- * Cross-process usage: KeepAliveService reads statistics via
- * {@link #getStatistics(Context)} to populate the foreground notification.
- * Because it runs in the ":intercept" process, it opens the same filesDir
- * (same UID → same path) independently.
+ * Cross-process: KeepAliveService (in :intercept) calls {@link #getStatistics(Context)}
+ * to populate the foreground notification. Since stats are stored in SharedPreferences,
+ * they are readable from any process with the same UID.
  */
 public final class LogManager {
 
@@ -46,7 +38,7 @@ public final class LogManager {
 
     private static final String DATE_PATTERN = "yyyy-MM-dd HH:mm:ss";
 
-    // Shared executor — keeps disk I/O off the main thread.
+    // Single-thread executor — serializes all file writes.
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
 
     private LogManager() {}
@@ -68,7 +60,7 @@ public final class LogManager {
         public final long    timestamp;
         public final LogType type;
         public final String  message;
-        /** Optional extra detail line (may be null). */
+        /** Optional extra detail line. Null if absent. */
         public final String  details;
 
         public LogEntry(long timestamp, LogType type, String message, String details) {
@@ -78,7 +70,7 @@ public final class LogManager {
             this.details   = details;
         }
 
-        /** Serialized form written to disk. */
+        /** Format written to disk: "2024-01-01 12:00:00 [TYPE] message\n  → details" */
         public String toFormattedString() {
             SimpleDateFormat fmt = new SimpleDateFormat(DATE_PATTERN, Locale.getDefault());
             String time    = fmt.format(new Date(timestamp));
@@ -95,49 +87,42 @@ public final class LogManager {
     public static final class Statistics {
         public final int  themeInstallCount;
         public final int  alarmInterceptCount;
-        public final long lastThemeInstallTime;   // epoch ms (0 = never)
-        public final long lastAlarmInterceptTime; // epoch ms (0 = never)
+        public final long lastThemeInstallTime;    // epoch ms, 0 = never
+        public final long lastAlarmInterceptTime;  // epoch ms, 0 = never
         public final long totalLogSizeBytes;
 
         public Statistics(int themeInstallCount, int alarmInterceptCount,
                           long lastThemeInstallTime, long lastAlarmInterceptTime,
                           long totalLogSizeBytes) {
-            this.themeInstallCount    = themeInstallCount;
-            this.alarmInterceptCount  = alarmInterceptCount;
-            this.lastThemeInstallTime = lastThemeInstallTime;
+            this.themeInstallCount     = themeInstallCount;
+            this.alarmInterceptCount   = alarmInterceptCount;
+            this.lastThemeInstallTime  = lastThemeInstallTime;
             this.lastAlarmInterceptTime = lastAlarmInterceptTime;
-            this.totalLogSizeBytes    = totalLogSizeBytes;
+            this.totalLogSizeBytes     = totalLogSizeBytes;
         }
     }
 
-    // ── Public write API ──────────────────────────────────────────────────────
+    // ── Write API ─────────────────────────────────────────────────────────────
 
     /**
-     * Appends a log entry asynchronously.
-     *
-     * @param context Any valid Context (application context used internally).
-     * @param type    Log type for categorization.
-     * @param message Short human-readable message.
-     * @param details Optional additional details (may be null).
+     * Appends a log entry asynchronously (never blocks the calling thread).
      */
     public static void log(Context context, LogType type, String message, String details) {
         Context appCtx = context.getApplicationContext();
         EXECUTOR.execute(() -> {
             try {
                 LogEntry entry = new LogEntry(System.currentTimeMillis(), type, message, details);
-                File logFile = getLogFile(appCtx);
+                File logFile = logFile(appCtx);
 
-                // Trim before appending if the file is too large.
                 if (logFile.exists() && logFile.length() > MAX_LOG_BYTES) {
                     trimLog(logFile);
                 }
 
-                try (FileWriter fw = new FileWriter(logFile, /* append= */ true);
-                     PrintWriter pw = new PrintWriter(fw)) {
+                try (PrintWriter pw = new PrintWriter(new FileWriter(logFile, true))) {
                     pw.println(entry.toFormattedString());
                 }
 
-                updateStatistics(type);
+                updateStats(type);
             } catch (IOException e) {
                 Log.e(TAG, "log() write failed", e);
             }
@@ -149,15 +134,28 @@ public final class LogManager {
         log(context, type, message, null);
     }
 
-    // ── Public read API ───────────────────────────────────────────────────────
+    // ── Read API ──────────────────────────────────────────────────────────────
 
     /**
-     * Reads all persisted log entries (newest first) synchronously.
-     *
-     * Must NOT be called on the main thread. Use EXECUTOR or a background thread.
+     * Returns aggregate statistics — fast, reads only from SharedPreferences.
+     * Safe to call on any thread, including the main thread.
+     */
+    public static Statistics getStatistics(Context context) {
+        File logFile    = logFile(context.getApplicationContext());
+        int  intercepts = PreferenceUtil.getInt("stat_alarm_intercept_count", 0);
+        int  installs   = PreferenceUtil.getInt("stat_theme_install_count",   0);
+        long lastInt    = (long) PreferenceUtil.getInt("stat_last_alarm_intercept", 0) * 1000L;
+        long lastInst   = (long) PreferenceUtil.getInt("stat_last_theme_install",   0) * 1000L;
+        long logSize    = logFile.exists() ? logFile.length() : 0L;
+        return new Statistics(installs, intercepts, lastInst, lastInt, logSize);
+    }
+
+    /**
+     * Reads all log entries from disk (newest first).
+     * Must NOT be called on the main thread.
      */
     public static List<LogEntry> getAllLogs(Context context) {
-        File logFile = getLogFile(context.getApplicationContext());
+        File logFile = logFile(context.getApplicationContext());
         if (!logFile.exists()) return Collections.emptyList();
 
         List<String> lines = new ArrayList<>();
@@ -169,8 +167,8 @@ public final class LogManager {
             return Collections.emptyList();
         }
 
-        SimpleDateFormat fmt = new SimpleDateFormat(DATE_PATTERN, Locale.getDefault());
-        List<LogEntry> entries = new ArrayList<>();
+        SimpleDateFormat fmt     = new SimpleDateFormat(DATE_PATTERN, Locale.getDefault());
+        List<LogEntry>   entries = new ArrayList<>();
 
         int i = 0;
         while (i < lines.size()) {
@@ -178,17 +176,22 @@ public final class LogManager {
             if (line.isEmpty()) { i++; continue; }
 
             try {
-                // Format: "yyyy-MM-dd HH:mm:ss [TYPE] message"
+                // "yyyy-MM-dd HH:mm:ss [TYPE] message"
                 String[] parts = line.split(" ", 4);
                 if (parts.length >= 4) {
                     String dateTime  = parts[0] + " " + parts[1];
-                    long   timestamp = 0;
-                    try { timestamp = fmt.parse(dateTime).getTime(); } catch (ParseException ignored) {}
-                    String typeStr = parts[2].replace("[", "").replace("]", "");
-                    LogType type;
-                    try { type = LogType.valueOf(typeStr); } catch (IllegalArgumentException e2) { type = LogType.INFO; }
-                    String message = parts[3];
+                    long   timestamp = 0L;
+                    try {
+                        Date parsed = fmt.parse(dateTime); // may return null
+                        if (parsed != null) timestamp = parsed.getTime();
+                    } catch (ParseException ignored) {}
 
+                    String  typeStr = parts[2].replace("[", "").replace("]", "");
+                    LogType type;
+                    try { type = LogType.valueOf(typeStr); }
+                    catch (IllegalArgumentException e) { type = LogType.INFO; }
+
+                    String message = parts[3];
                     String details = null;
                     if (i + 1 < lines.size() && lines.get(i + 1).startsWith("  \u2192 ")) {
                         details = lines.get(i + 1).substring(4);
@@ -200,34 +203,16 @@ public final class LogManager {
             i++;
         }
 
-        // Newest first
-        Collections.reverse(entries);
+        Collections.reverse(entries); // newest first
         return entries;
     }
 
-    /**
-     * Returns aggregate statistics (always fast — reads only from SharedPreferences
-     * plus one File.length() call). Safe to call from any process.
-     */
-    public static Statistics getStatistics(Context context) {
-        File logFile = getLogFile(context.getApplicationContext());
-
-        // Count from in-memory log if needed; use PreferenceUtil counters for speed.
-        int interceptCount = PreferenceUtil.getInt("stat_alarm_intercept_count", 0);
-        int installCount   = PreferenceUtil.getInt("stat_theme_install_count",   0);
-        long lastIntercept = (long) PreferenceUtil.getInt("stat_last_alarm_intercept", 0) * 1000L;
-        long lastInstall   = (long) PreferenceUtil.getInt("stat_last_theme_install",   0) * 1000L;
-        long logSize       = logFile.exists() ? logFile.length() : 0L;
-
-        return new Statistics(installCount, interceptCount, lastInstall, lastIntercept, logSize);
-    }
-
-    /** Clears the log file and resets all statistics counters. */
+    /** Deletes the log file and resets all statistic counters. */
     public static void clearAllLogs(Context context) {
         Context appCtx = context.getApplicationContext();
         EXECUTOR.execute(() -> {
-            File logFile = getLogFile(appCtx);
-            if (logFile.exists()) logFile.delete();
+            File f = logFile(appCtx);
+            if (f.exists()) f.delete();
             PreferenceUtil.setInt("stat_alarm_intercept_count", 0);
             PreferenceUtil.setInt("stat_theme_install_count",   0);
             PreferenceUtil.setInt("stat_last_alarm_intercept",  0);
@@ -235,40 +220,22 @@ public final class LogManager {
         });
     }
 
-    /**
-     * Copies the log file to a destination file.
-     *
-     * @return true on success, false if the log file doesn't exist or copy fails.
-     */
-    public static boolean exportLogs(Context context, File targetFile) {
-        File logFile = getLogFile(context.getApplicationContext());
-        if (!logFile.exists()) return false;
-        try {
-            copyFile(logFile, targetFile);
-            return true;
-        } catch (IOException e) {
-            Log.e(TAG, "exportLogs() failed", e);
-            return false;
-        }
-    }
-
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    private static File getLogFile(Context appCtx) {
+    private static File logFile(Context appCtx) {
         return new File(appCtx.getFilesDir(), LOG_FILE_NAME);
     }
 
     private static void trimLog(File logFile) {
         try {
-            List<String> lines = new ArrayList<>();
+            List<String> all = new ArrayList<>();
             try (BufferedReader br = new BufferedReader(new FileReader(logFile))) {
                 String line;
-                while ((line = br.readLine()) != null) lines.add(line);
+                while ((line = br.readLine()) != null) all.add(line);
             }
-            if (lines.size() > MAX_LOG_LINES) {
-                List<String> keep = lines.subList(lines.size() - MAX_LOG_LINES, lines.size());
-                try (FileWriter fw = new FileWriter(logFile, /* append= */ false);
-                     PrintWriter pw = new PrintWriter(fw)) {
+            if (all.size() > MAX_LOG_LINES) {
+                List<String> keep = all.subList(all.size() - MAX_LOG_LINES, all.size());
+                try (PrintWriter pw = new PrintWriter(new FileWriter(logFile, false))) {
                     for (String l : keep) pw.println(l);
                 }
             }
@@ -277,32 +244,21 @@ public final class LogManager {
         }
     }
 
-    private static void updateStatistics(LogType type) {
-        int nowSeconds = (int) (System.currentTimeMillis() / 1000L);
+    private static void updateStats(LogType type) {
+        int now = (int) (System.currentTimeMillis() / 1000L);
         switch (type) {
             case THEME_INSTALL:
-                PreferenceUtil.setInt("stat_last_theme_install",
-                        nowSeconds);
+                PreferenceUtil.setInt("stat_last_theme_install", now);
                 PreferenceUtil.setInt("stat_theme_install_count",
                         PreferenceUtil.getInt("stat_theme_install_count", 0) + 1);
                 break;
             case ALARM_INTERCEPT:
-                PreferenceUtil.setInt("stat_last_alarm_intercept",
-                        nowSeconds);
+                PreferenceUtil.setInt("stat_last_alarm_intercept", now);
                 PreferenceUtil.setInt("stat_alarm_intercept_count",
                         PreferenceUtil.getInt("stat_alarm_intercept_count", 0) + 1);
                 break;
             default:
                 break;
-        }
-    }
-
-    private static void copyFile(File src, File dst) throws IOException {
-        byte[] buf = new byte[8192];
-        try (java.io.FileInputStream in  = new java.io.FileInputStream(src);
-             java.io.FileOutputStream out = new java.io.FileOutputStream(dst)) {
-            int n;
-            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
         }
     }
 }

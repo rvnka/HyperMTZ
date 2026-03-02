@@ -1,8 +1,10 @@
 package app.hypermtz.ui.dialog;
 
+import android.app.Activity;
 import android.app.Dialog;
 import android.content.ComponentName;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
@@ -35,47 +37,29 @@ import app.hypermtz.ui.MainViewModel;
 import app.hypermtz.util.LogManager;
 
 /**
- * Installs a .mtz theme file using ThemeStore's Zero Width Space path trick,
- * then launches MIUI ThemeManager via ApplyThemeForScreenshot.
+ * Installs a .mtz theme file using the ZWS path trick, then launches ThemeManager.
  *
- * ── Install flow (ThemeStore method — primary) ────────────────────────────
+ * ── Install flow (primary — ThemeStore ZWS method) ──────────────────────
+ * 1. Stream bytes from content:// URI to ZWS path:
+ *    /sdcard/Android/\u200bdata/com.android.thememanager/files/theme/安装主题.mtz
+ *    No Shizuku, no MANAGE_EXTERNAL_STORAGE (bypasses scoped storage check).
+ * 2. Launch com.android.thememanager/.ApplyThemeForScreenshot with REAL path.
  *
- *  1. Stream bytes from content:// URI directly to the ZWS path:
- *       /sdcard/Android/\u200bdata/com.android.thememanager/files/theme/安装主题.mtz
- *     No Shizuku, no intermediate cache, no special permissions needed.
- *     On Android < 11 the real path is used (legacy storage).
+ * ── Fallback (Shizuku) ────────────────────────────────────────────────────
+ * If ZWS streaming fails (SELinux edge case, older ROM):
+ * 1. Copy URI bytes to app's external cache.
+ * 2. Use PrivilegedService.copyFile() to place at snapshot path.
+ * 3. Launch ThemeManager with snapshot path.
  *
- *  2. Launch com.android.thememanager/.ApplyThemeForScreenshot with the
- *     REAL (non-ZWS) path:
- *       /sdcard/Android/data/com.android.thememanager/files/theme/安装主题.mtz
- *     ThemeManager cannot resolve the ZWS path from an intent extra, so we
- *     always pass the canonical real path regardless of how we wrote the file.
+ * ── CRITICAL FIX: context capture before dismiss ─────────────────────────
+ * dismissAllowingStateLoss() detaches the fragment immediately. Any call to
+ * requireContext() / requireActivity() / isAdded() AFTER that throws or
+ * returns false. The original code dismissed first, then checked isAdded() in
+ * the executor → always false → ThemeManager never launched!
  *
- * ── Fallback flow (Shizuku method — when ZWS fails) ─────────────────────
- *
- *  If ZWS streaming fails (SELinux edge case, older ROM quirk, etc.):
- *  - Copy the URI bytes to external cache (app process can resolve content://)
- *  - Hand the cache path to PrivilegedService.copyFile() via Shizuku IPC
- *  - Target: /sdcard/Android/data/com.android.thememanager/files/snapshot/snapshot.mtz
- *  - Launch ThemeManager with the snapshot path
- *
- * ── Intent extras (ThemeStore method — exact copy) ────────────────────────
- *
- *  action            = Intent.ACTION_MAIN      (required)
- *  theme_file_path   = REAL_THEME_PATH         (canonical path, no ZWS)
- *  api_called_from   = "ThemeEditor"           (ThemeStore — wider ROM compat)
- *  ver2_step         = "ver2_step_apply"
- *  FLAG_ACTIVITY_NEW_TASK
- *
- *  Fallback api_called_from = "com.miui.themestore" (io.vi.hypertheme method)
- *  theme_apply_flags = 1 added only in the Shizuku/snapshot fallback path
- *  (ThemeStore does not include this extra).
- *
- * ── Why NOT_EXPORTED for Shizuku? ────────────────────────────────────────
- *
- *  Shizuku is not used for broadcast interception, only for file copy.
- *  The broadcast receiver in ThemeInterceptService uses NOT_EXPORTED (API 33+)
- *  because MIUI (system/privileged) can still deliver to NOT_EXPORTED receivers.
+ * Fix: capture Activity + applicationContext BEFORE dismiss. Pass them as
+ * parameters to all helper methods. Never call isAdded() / requireXxx() in
+ * the executor after the fragment is dismissed.
  */
 public class FileApplyDialogFragment extends DialogFragment {
 
@@ -85,28 +69,28 @@ public class FileApplyDialogFragment extends DialogFragment {
     private static final String ARG_SOURCE_URI = "source_uri";
     private static final String ARG_FILE_NAME  = "file_name";
 
-    // ── ThemeStore method — exact paths ──────────────────────────────────────
+    // ── ThemeStore install paths ──────────────────────────────────────────────
 
-    /**
-     * ThemeStore uses "安装主题.mtz" — this exact filename is passed in
-     * theme_file_path. MIUI doesn't care about the name, but matching
-     * ThemeStore reduces any chance of future ROM-side filtering.
-     */
-    private static final String THEME_FILENAME  = "安装主题.mtz";
+    /** Exact filename ThemeStore uses. Passing it in the intent matches ThemeStore behavior. */
+    private static final String THEME_FILENAME = "安装主题.mtz";
 
-    private static final String REAL_THEME_DIR  =
+    private static final String REAL_THEME_DIR =
             Environment.getExternalStorageDirectory().getPath()
             + "/Android/data/com.android.thememanager/files/theme/";
 
-    /** Exact path passed in the intent extra (canonical, no ZWS). */
+    /** Path passed in the intent extra — always the canonical real path (no ZWS). */
     private static final String REAL_THEME_PATH = REAL_THEME_DIR + THEME_FILENAME;
 
-    // ── Shizuku snapshot fallback ─────────────────────────────────────────────
-
+    /**
+     * Shizuku fallback destination.
+     * FIX: use Environment.getExternalStorageDirectory() instead of hardcoded /sdcard/
+     * so this works on devices where /sdcard is not the primary external storage.
+     */
     private static final String SNAPSHOT_PATH =
-            "/sdcard/Android/data/com.android.thememanager/files/snapshot/snapshot.mtz";
+            Environment.getExternalStorageDirectory().getPath()
+            + "/Android/data/com.android.thememanager/files/snapshot/snapshot.mtz";
 
-    // ── ThemeManager activity ─────────────────────────────────────────────────
+    // ── ThemeManager ──────────────────────────────────────────────────────────
 
     private static final String THEME_MANAGER_PKG    = "com.android.thememanager";
     private static final String THEME_APPLY_ACTIVITY =
@@ -114,12 +98,8 @@ public class FileApplyDialogFragment extends DialogFragment {
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── Factory ───────────────────────────────────────────────────────────────
 
-    /**
-     * @param sourceUri  content:// or file:// URI of the .mtz file the user selected
-     * @param fileName   display name (e.g. "CoolTheme.mtz") for the dialog title
-     */
     public static FileApplyDialogFragment newInstance(String sourceUri, String fileName) {
         Bundle args = new Bundle();
         args.putString(ARG_SOURCE_URI, sourceUri);
@@ -128,6 +108,8 @@ public class FileApplyDialogFragment extends DialogFragment {
         f.setArguments(args);
         return f;
     }
+
+    // ── Dialog ────────────────────────────────────────────────────────────────
 
     @NonNull
     @Override
@@ -138,68 +120,72 @@ public class FileApplyDialogFragment extends DialogFragment {
         View view = LayoutInflater.from(requireContext())
                 .inflate(R.layout.dialog_file_apply, null);
 
-        TextView tvFileName = view.findViewById(R.id.tv_file_name);
-        Button   btnImport  = view.findViewById(R.id.btn_import);
-        Button   btnApply   = view.findViewById(R.id.btn_apply);
-
-        // Theme-name input not needed — destination is always REAL_THEME_PATH.
+        // Destination is always REAL_THEME_PATH — name field not needed.
         View tilName = view.findViewById(R.id.til_theme_name);
         if (tilName != null) tilName.setVisibility(View.GONE);
 
-        tvFileName.setText(fileName);
+        ((TextView) view.findViewById(R.id.tv_file_name)).setText(fileName);
 
         MainViewModel viewModel = new ViewModelProvider(requireActivity())
                 .get(MainViewModel.class);
 
         Uri sourceUri = Uri.parse(uriString);
 
-        btnImport.setOnClickListener(v -> startInstall(viewModel, sourceUri, false));
-        btnApply.setOnClickListener(v  -> startInstall(viewModel, sourceUri, true));
+        view.findViewById(R.id.btn_import).setOnClickListener(
+                v -> startInstall(viewModel, sourceUri, false));
+        view.findViewById(R.id.btn_apply).setOnClickListener(
+                v -> startInstall(viewModel, sourceUri, true));
 
         return new AlertDialog.Builder(requireContext())
                 .setView(view)
                 .create();
     }
 
-    // ── Entry point ───────────────────────────────────────────────────────────
+    // ── Install entry point ───────────────────────────────────────────────────
 
     private void startInstall(MainViewModel viewModel, Uri sourceUri, boolean applyAfterCopy) {
+        // ── CRITICAL: capture context references BEFORE dismissing ─────────────
+        // After dismissAllowingStateLoss(), this fragment is detached:
+        //   • isAdded()        → always false
+        //   • requireContext() → throws IllegalStateException
+        //   • requireActivity()→ throws IllegalStateException
+        //
+        // Capture what we need NOW, pass them into the executor lambda.
+        final Activity        activity   = requireActivity();
+        final Context         appContext = requireContext().getApplicationContext();
+        final ContentResolver cr        = appContext.getContentResolver();
+
         dismissAllowingStateLoss();
         viewModel.setThemeCopyRunning(true);
 
         executor.submit(() -> {
-            // ── Strategy 1 (ThemeStore): stream URI → ZWS path ───────────────
-            // No Shizuku, no intermediate cache, no MANAGE_EXTERNAL_STORAGE.
-            boolean success = streamUriViaZwsPath(sourceUri);
+            // ── Strategy 1: ZWS stream (ThemeStore method, no Shizuku) ──────────
+            boolean success       = streamUriViaZwsPath(cr, sourceUri);
             String  installedPath = REAL_THEME_PATH;
 
             if (success) {
                 Log.d(TAG_LOG, "ZWS stream succeeded → " + REAL_THEME_PATH);
             } else {
-                // ── Strategy 2 (Shizuku fallback) ─────────────────────────────
+                // ── Strategy 2: Shizuku snapshot fallback ──────────────────────
                 Log.w(TAG_LOG, "ZWS stream failed — trying Shizuku snapshot fallback");
-
-                // Step 2a: copy URI bytes to external cache (app process resolves URI).
-                File cacheFile = copyUriToCache(sourceUri);
-
+                File cacheFile = copyUriToCache(cr, appContext, sourceUri);
                 if (cacheFile != null) {
-                    IPrivilegedService service = viewModel.getPrivilegedService();
-                    if (service != null) {
+                    IPrivilegedService svc = viewModel.getPrivilegedService();
+                    if (svc != null) {
                         try {
-                            success = service.copyFile(
-                                    cacheFile.getAbsolutePath(), SNAPSHOT_PATH);
+                            success       = svc.copyFile(cacheFile.getAbsolutePath(), SNAPSHOT_PATH);
                             installedPath = SNAPSHOT_PATH;
                             Log.d(TAG_LOG, "Shizuku copyFile "
-                                    + (success ? "succeeded" : "failed")
-                                    + " → " + SNAPSHOT_PATH);
+                                    + (success ? "succeeded" : "failed") + " → " + SNAPSHOT_PATH);
                         } catch (RemoteException e) {
                             Log.e(TAG_LOG, "Shizuku IPC failed", e);
                         } finally {
                             //noinspection ResultOfMethodCallIgnored
-                            cacheFile.delete(); // clean up temp file
+                            cacheFile.delete();
                         }
                     } else {
-                        Log.w(TAG_LOG, "Shizuku not connected, can't fallback");
+                        Log.w(TAG_LOG, "Shizuku not connected — cannot fallback");
+                        //noinspection ResultOfMethodCallIgnored
                         cacheFile.delete();
                     }
                 }
@@ -208,51 +194,44 @@ public class FileApplyDialogFragment extends DialogFragment {
             final boolean copyOk    = success;
             final String  finalPath = installedPath;
 
-            if (!isAdded()) {
+            // Post results back on main thread using the captured Activity reference.
+            // Do NOT use isAdded() / requireXxx() here — fragment is already dismissed.
+            if (activity.isFinishing() || activity.isDestroyed()) {
                 viewModel.setThemeCopyRunning(false);
                 return;
             }
-            requireActivity().runOnUiThread(() -> {
-                if (!isAdded()) {
-                    viewModel.setThemeCopyRunning(false);
-                    return;
-                }
+
+            activity.runOnUiThread(() -> {
                 viewModel.setThemeCopyRunning(false);
+
                 if (copyOk) {
-                    Toast.makeText(requireContext(), R.string.copy_success,
-                            Toast.LENGTH_SHORT).show();
-                    // Log the install via LogManager for statistics tracking.
-                    LogManager.log(requireContext(),
-                            LogManager.LogType.THEME_INSTALL,
-                            "Theme installed",
-                            "path=" + finalPath);
+                    Toast.makeText(appContext, R.string.copy_success, Toast.LENGTH_SHORT).show();
+                    LogManager.log(appContext, LogManager.LogType.THEME_INSTALL,
+                            "Theme installed", "path=" + finalPath);
                     if (applyAfterCopy) {
-                        launchApplyThemeForScreenshot(finalPath);
+                        launchApplyThemeForScreenshot(finalPath, appContext);
                     }
                     viewModel.refresh();
                 } else {
-                    Toast.makeText(requireContext(), R.string.copy_failed,
-                            Toast.LENGTH_LONG).show();
+                    Toast.makeText(appContext, R.string.copy_failed, Toast.LENGTH_LONG).show();
                 }
             });
         });
     }
 
-    // ── Strategy 1: ZWS streaming directly from URI ───────────────────────────
+    // ── Strategy 1: ZWS streaming ─────────────────────────────────────────────
 
     /**
-     * Computes the ZWS-modified path for Android 11+ scoped storage bypass.
+     * Inserts U+200B after "Android/" to produce a path that passes Android's
+     * scoped-storage checker (which does string comparison) while resolving to
+     * the same filesystem location via FUSE on Android 11+.
      *
-     * Inserting U+200B (Zero Width Space) immediately after "Android/" produces
-     * a path the filesystem treats identically, but Android's restricted-path
-     * checker does not recognize as a protected location.
-     *
-     * On Android < 11 returns the original file unchanged (legacy storage).
+     * On Android < 11, returns the original file (legacy storage).
      */
     private static File getReviseFile(File file) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return file;
 
-        String androidPath = Environment.getExternalStorageDirectory().getPath() + "/Android/";
+        String androidDir = Environment.getExternalStorageDirectory().getPath() + "/Android/";
         String canonical;
         try {
             canonical = file.getCanonicalPath();
@@ -260,23 +239,22 @@ public class FileApplyDialogFragment extends DialogFragment {
             canonical = file.getAbsolutePath();
         }
 
-        if (canonical.length() > androidPath.length()
-                && canonical.toLowerCase().startsWith(androidPath.toLowerCase())) {
-            return new File(androidPath + "\u200b" + canonical.substring(androidPath.length()));
+        // Case-insensitive check in case the path casing differs on some ROMs.
+        if (canonical.length() > androidDir.length()
+                && canonical.toLowerCase().startsWith(androidDir.toLowerCase())) {
+            // Insert ZWS immediately after "Android/" and before "data/".
+            return new File(androidDir + "\u200b" + canonical.substring(androidDir.length()));
         }
         return file;
     }
 
     /**
-     * Streams bytes from a content:// or file:// URI directly to the ZWS path.
+     * Streams the URI bytes directly to the ZWS-modified destination path.
      *
-     * This is the ThemeStore method: no Shizuku, no intermediate cache file,
-     * no MANAGE_EXTERNAL_STORAGE. Works because:
-     *   - ContentResolver.openInputStream() resolves the URI in the app process
-     *   - The ZWS path is writable on Android 11+ without special permissions
-     *   - ThemeManager is launched with the REAL (non-ZWS) canonical path
+     * Uses the pre-captured ContentResolver so this method is safe to call
+     * after the fragment has been dismissed.
      */
-    private boolean streamUriViaZwsPath(Uri sourceUri) {
+    private static boolean streamUriViaZwsPath(ContentResolver cr, Uri sourceUri) {
         try {
             File realDir = new File(REAL_THEME_DIR);
             File zwsDir  = getReviseFile(realDir);
@@ -284,13 +262,19 @@ public class FileApplyDialogFragment extends DialogFragment {
 
             if (!zwsDir.exists() && !zwsDir.mkdirs()) {
                 Log.w(TAG_LOG, "ZWS mkdirs failed: " + zwsDir);
-                return false;
+                // Attempt mkdirs on the real path as a fallback.
+                if (!realDir.exists() && !realDir.mkdirs()) {
+                    Log.w(TAG_LOG, "realDir mkdirs also failed: " + realDir);
+                    return false;
+                }
+                // If real mkdirs succeeded, write to real path directly.
+                zwsFile = new File(realDir, THEME_FILENAME);
             }
 
-            if (zwsFile.exists()) zwsFile.delete();
+            if (zwsFile.exists()) //noinspection ResultOfMethodCallIgnored
+                zwsFile.delete();
 
-            ContentResolver cr = requireContext().getContentResolver();
-            try (InputStream in  = cr.openInputStream(sourceUri);
+            try (InputStream    in  = cr.openInputStream(sourceUri);
                  FileOutputStream out = new FileOutputStream(zwsFile)) {
                 if (in == null) {
                     Log.w(TAG_LOG, "Cannot open URI: " + sourceUri);
@@ -307,8 +291,9 @@ public class FileApplyDialogFragment extends DialogFragment {
                 return false;
             }
 
-            Log.d(TAG_LOG, "ZWS stream: size=" + zwsFile.length()
-                    + " real_exists=" + new File(REAL_THEME_PATH).exists());
+            // Log whether the real path is visible (useful for debugging the FUSE trick).
+            Log.d(TAG_LOG, "ZWS stream OK: size=" + zwsFile.length()
+                    + " | real_exists=" + new File(REAL_THEME_PATH).exists());
             return true;
 
         } catch (Exception e) {
@@ -317,26 +302,26 @@ public class FileApplyDialogFragment extends DialogFragment {
         }
     }
 
-    // ── Strategy 2 helper: copy URI to external cache ─────────────────────────
+    // ── Strategy 2 helper: URI → external cache ───────────────────────────────
 
     /**
      * Copies the URI bytes to the app's external cache directory.
      *
-     * Used only as a Shizuku fallback when ZWS streaming fails.
-     * External cache (/sdcard/Android/data/app.hypermtz/cache/) is readable
-     * by ADB shell on all MIUI versions without SELinux issues.
+     * External cache (/sdcard/Android/data/app.hypermtz/cache/) is readable by
+     * ADB shell on all MIUI versions without SELinux issues.
+     *
+     * Uses pre-captured cr + appContext so this is safe after fragment dismiss.
      *
      * @return the cache File on success, null on failure.
      */
     @Nullable
-    private File copyUriToCache(Uri sourceUri) {
+    private static File copyUriToCache(ContentResolver cr, Context appContext, Uri sourceUri) {
         try {
-            File cacheDir = requireContext().getExternalCacheDir();
-            if (cacheDir == null) cacheDir = requireContext().getCacheDir();
+            File cacheDir = appContext.getExternalCacheDir();
+            if (cacheDir == null) cacheDir = appContext.getCacheDir();
             File outFile = new File(cacheDir, "hypermtz_temp.mtz");
 
-            ContentResolver cr = requireContext().getContentResolver();
-            try (InputStream in  = cr.openInputStream(sourceUri);
+            try (InputStream    in  = cr.openInputStream(sourceUri);
                  FileOutputStream out = new FileOutputStream(outFile)) {
                 if (in == null) return null;
                 byte[] buf = new byte[65536];
@@ -346,71 +331,62 @@ public class FileApplyDialogFragment extends DialogFragment {
             }
 
             return (outFile.exists() && outFile.length() > 0) ? outFile : null;
+
         } catch (Exception e) {
             Log.e(TAG_LOG, "copyUriToCache failed", e);
             return null;
         }
     }
 
-    // ── ApplyThemeForScreenshot launcher ─────────────────────────────────────
+    // ── ThemeManager launcher ─────────────────────────────────────────────────
 
     /**
      * Launches com.android.thememanager/.ApplyThemeForScreenshot.
      *
-     * ThemeStore method (primary):
-     *   action = ACTION_MAIN, api_called_from = "ThemeEditor"
-     *   No theme_apply_flags (ThemeStore does not include this extra).
+     * Uses appContext.startActivity() with FLAG_ACTIVITY_NEW_TASK so it can
+     * be called from any context, including after the dialog is dismissed.
      *
-     * Fallback (io.vi.hypertheme / snapshot path):
-     *   api_called_from = "com.miui.themestore", theme_apply_flags = 1
-     *
-     * The hardcoded REAL_THEME_PATH is always used for the ZWS path — ThemeManager
-     * cannot resolve ZWS paths from intent extras. For the snapshot path,
-     * finalPath will be SNAPSHOT_PATH.
+     * Tries ThemeStore method (api_called_from="ThemeEditor") first, then
+     * falls back to the snapshot/miuithemestore method (api_called_from="com.miui.themestore").
      */
-    private void launchApplyThemeForScreenshot(String themePath) {
+    private static void launchApplyThemeForScreenshot(String themePath, Context appContext) {
         boolean isSnapshotPath = themePath.equals(SNAPSHOT_PATH);
 
-        // Primary: exact ThemeStore method
-        if (!isSnapshotPath && tryLaunch(themePath, "ThemeEditor", false)) {
+        // Primary: ThemeStore method (no theme_apply_flags)
+        if (!isSnapshotPath && tryLaunch(appContext, themePath, "ThemeEditor", false)) {
             Log.d(TAG_LOG, "Launched via ThemeEditor");
             return;
         }
-        // Fallback with theme_apply_flags (compatible with snapshot path too)
-        if (tryLaunch(themePath, "com.miui.themestore", true)) {
+        // Fallback: snapshot path / miuithemestore method
+        if (tryLaunch(appContext, themePath, "com.miui.themestore", true)) {
             Log.d(TAG_LOG, "Launched via com.miui.themestore");
             return;
         }
-        Log.e(TAG_LOG, "All launch attempts failed for path: " + themePath);
-        if (isAdded()) {
-            Toast.makeText(requireContext(), R.string.apply_theme_failed,
-                    Toast.LENGTH_SHORT).show();
-        }
+        Log.e(TAG_LOG, "All launch attempts failed for: " + themePath);
+        Toast.makeText(appContext, R.string.apply_theme_failed, Toast.LENGTH_SHORT).show();
     }
 
-    /**
-     * @param includeApplyFlags whether to add theme_apply_flags=1 (Shizuku/snapshot path)
-     */
-    private boolean tryLaunch(String themePath, String apiCalledFrom,
-                               boolean includeApplyFlags) {
+    private static boolean tryLaunch(Context appContext, String themePath,
+                                      String apiCalledFrom, boolean includeApplyFlags) {
         try {
             Intent intent = new Intent(Intent.ACTION_MAIN);
-            intent.setComponent(
-                    new ComponentName(THEME_MANAGER_PKG, THEME_APPLY_ACTIVITY));
+            intent.setComponent(new ComponentName(THEME_MANAGER_PKG, THEME_APPLY_ACTIVITY));
             intent.putExtra("theme_file_path", themePath);
             intent.putExtra("api_called_from", apiCalledFrom);
-            intent.putExtra("ver2_step", "ver2_step_apply");
+            intent.putExtra("ver2_step",       "ver2_step_apply");
             if (includeApplyFlags) {
                 intent.putExtra("theme_apply_flags", 1);
             }
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            requireContext().startActivity(intent);
+            appContext.startActivity(intent);
             return true;
         } catch (Exception e) {
             Log.w(TAG_LOG, "tryLaunch [" + apiCalledFrom + "] failed: " + e.getMessage());
             return false;
         }
     }
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     @Override
     public void onDestroyView() {
