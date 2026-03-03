@@ -35,6 +35,7 @@ import app.hypermtz.IPrivilegedService;
 import app.hypermtz.R;
 import app.hypermtz.ui.MainViewModel;
 import app.hypermtz.util.LogManager;
+import app.hypermtz.service.ThemeInterceptService;
 
 /**
  * Installs a .mtz theme file using the ZWS path trick, then launches ThemeManager.
@@ -350,6 +351,21 @@ public class FileApplyDialogFragment extends DialogFragment {
      * falls back to the snapshot/miuithemestore method (api_called_from="com.miui.themestore").
      */
     private static void launchApplyThemeForScreenshot(String themePath, Context appContext) {
+        // ── Suppress ThemeInterceptService auto-click during this install ─────
+        // ThemeInterceptService.onAccessibilityEvent() would auto-click buttons
+        // in ANY ThemeManager window including the normal apply dialog we open here.
+        // Send a directed broadcast to ThemeInterceptService BEFORE startActivity so
+        // it sets its in-memory suppressAutoClickUntilMs flag before ThemeManager UI fires.
+        //
+        // WHY NOT SharedPreferences:
+        // ThemeInterceptService runs in the ":intercept" process. Each process holds
+        // its own in-memory SharedPreferences cache — a write in the main process is
+        // never reflected in :intercept's cache. Directed broadcast is the correct
+        // cross-process signal and arrives before ThemeManager finishes loading its UI.
+        Intent suppressIntent = new Intent(ThemeInterceptService.ACTION_SUPPRESS_AUTO_CLICK);
+        suppressIntent.setPackage(appContext.getPackageName());
+        appContext.sendBroadcast(suppressIntent);
+
         boolean isSnapshotPath = themePath.equals(SNAPSHOT_PATH);
 
         // Primary: ThemeStore method (no theme_apply_flags)

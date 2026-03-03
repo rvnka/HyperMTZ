@@ -51,6 +51,25 @@ public class ThemeInterceptService extends AccessibilityService {
     public static final String KEY_CONNECTED_TIME = "connected_time";
     public static final String KEY_INTERCEPT_TIME = "intercept_time";
 
+    /**
+     * Sent by FileApplyDialogFragment (main process) before launching ThemeManager
+     * intentionally. ThemeInterceptService receives this broadcast and sets an
+     * in-memory suppress flag so it does not auto-click the normal apply dialog.
+     *
+     * WHY NOT SharedPreferences: both processes have separate in-memory SP caches.
+     * A write from the main process is never reflected in the :intercept process's
+     * cached instance. A directed broadcast is the correct cross-process signal.
+     */
+    public static final String ACTION_SUPPRESS_AUTO_CLICK =
+            "app.hypermtz.ACTION_SUPPRESS_AUTO_CLICK";
+
+    /**
+     * Milliseconds to suppress accessibility auto-click after receiving
+     * ACTION_SUPPRESS_AUTO_CLICK. 120 s is generous enough for ThemeManager to
+     * finish applying on slow devices.
+     */
+    private static final long INSTALL_SUPPRESS_MS = 120_000L;
+
     private static final String TAG = "ThemeInterceptService";
 
     /**
@@ -62,7 +81,9 @@ public class ThemeInterceptService extends AccessibilityService {
         "Apply", "Install", "OK", "Continue", "Allow", "Ignore"
     };
 
-    private boolean receiverRegistered = false;
+    private boolean receiverRegistered       = false;
+    /** Epoch ms of last ACTION_SUPPRESS_AUTO_CLICK; 0 = never. */
+    private long    suppressAutoClickUntilMs = 0L;
 
     private static final DateTimeFormatter TIME_FMT =
             DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss", Locale.getDefault());
@@ -70,7 +91,17 @@ public class ThemeInterceptService extends AccessibilityService {
     private final BroadcastReceiver themeCheckReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (!ACTION_THEME_CHECK.equals(intent.getAction())) return;
+            String action = intent.getAction();
+
+            // Main process signals it is about to launch ThemeManager intentionally.
+            // Set an in-memory timestamp so onAccessibilityEvent() suppresses auto-click.
+            if (ACTION_SUPPRESS_AUTO_CLICK.equals(action)) {
+                suppressAutoClickUntilMs = System.currentTimeMillis() + INSTALL_SUPPRESS_MS;
+                Log.d(TAG, "Auto-click suppressed for " + INSTALL_SUPPRESS_MS / 1000 + "s");
+                return;
+            }
+
+            if (!ACTION_THEME_CHECK.equals(action)) return;
 
             Log.d(TAG, "CHECK_TIME_UP received");
             if (isOrderedBroadcast()) {
@@ -151,6 +182,27 @@ public class ThemeInterceptService extends AccessibilityService {
             return;
         }
 
+        // ── Suppress auto-click during HyperMTZ-initiated installs ─────────────
+        // When HyperMTZ launches ThemeManager via ApplyThemeForScreenshot the
+        // normal apply dialog also matches APPROVAL_TEXTS and would be clicked,
+        // killing the install. FileApplyDialogFragment sends ACTION_SUPPRESS_AUTO_CLICK
+        // (a directed broadcast to this service) just before startActivity, which sets
+        // suppressAutoClickUntilMs for INSTALL_SUPPRESS_MS (120 s).
+        //
+        // WHY BROADCAST, NOT SharedPreferences:
+        // This service runs in ":intercept" — a separate process. The main process
+        // and :intercept each hold their own in-memory SharedPreferences cache.
+        // A write from the main process is never reflected in :intercept's cache.
+        // A directed broadcast is the correct, reliable cross-process signal.
+        //
+        // The CHECK_TIME_UP broadcast intercept (abortBroadcast) is completely
+        // unaffected — it runs in the BroadcastReceiver, not here.
+        if (System.currentTimeMillis() < suppressAutoClickUntilMs) {
+            Log.d(TAG, "Auto-click suppressed — HyperMTZ install in progress ("
+                    + (suppressAutoClickUntilMs - System.currentTimeMillis()) / 1000 + "s left)");
+            return;
+        }
+
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
 
@@ -199,6 +251,7 @@ public class ThemeInterceptService extends AccessibilityService {
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_THEME_CHECK);
+        filter.addAction(ACTION_SUPPRESS_AUTO_CLICK);
         filter.addAction(Intent.ACTION_SCREEN_OFF);
         filter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY); // 1000
 
