@@ -212,7 +212,8 @@ public final class LogManager {
         Context appCtx = context.getApplicationContext();
         EXECUTOR.execute(() -> {
             File f = logFile(appCtx);
-            if (f.exists()) f.delete();
+            if (f.exists()) //noinspection ResultOfMethodCallIgnored
+                f.delete();
             PreferenceUtil.setInt("stat_alarm_intercept_count", 0);
             PreferenceUtil.setInt("stat_theme_install_count",   0);
             PreferenceUtil.setInt("stat_last_alarm_intercept",  0);

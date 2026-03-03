@@ -40,17 +40,10 @@ import app.hypermtz.util.ShizukuServiceManager;
 /**
  * Main UI entry point.
  *
- * Additions ported from ThemeStore's MainActivity.kt:
- *
- *  1. Optimization mode — if "optimization_mode_enabled"=true AND the accessibility
- *     service is running, the main process exits to save RAM (service keeps running
- *     in :intercept). Re-enabled by tapping the notification action button, which
- *     relaunches MainActivity with EXTRA_EXIT_OPTIMIZATION=true.
- *
- *  2. EXTRA_EXIT_OPTIMIZATION handling — checked in onCreate() before setContentView.
- *     Disables optimization mode, shows a confirmation toast, then continues normally.
- *     Uses Activity intent extras (not a broadcast) so it works even when the main
- *     process was previously killed.
+ * Optimization mode: if "optimization_mode_enabled"=true AND the accessibility
+ * service is running, the main process exits to save RAM (service keeps running
+ * in :intercept). Re-enabled by tapping the notification action button, which
+ * relaunches MainActivity with EXTRA_EXIT_OPTIMIZATION=true.
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -86,11 +79,9 @@ public class MainActivity extends AppCompatActivity {
         DynamicColors.applyToActivityIfAvailable(this);
 
         // ── Handle EXTRA_EXIT_OPTIMIZATION ────────────────────────────────────
-        //
         // The "Disable Optimization" notification button launches MainActivity with
-        // this extra set to true. We check it first — before the optimization-mode
-        // kill check — so we never accidentally re-kill ourselves after the user
-        // tapped the button.
+        // this extra. Check it first — before the optimization-mode kill — so we
+        // never accidentally re-kill ourselves after the user tapped the button.
         if (getIntent() != null && getIntent().getBooleanExtra(
                 KeepAliveService.EXTRA_EXIT_OPTIMIZATION, false)) {
             PreferenceUtil.setBoolean("optimization_mode_enabled", false);
@@ -100,8 +91,7 @@ public class MainActivity extends AppCompatActivity {
             getIntent().removeExtra(KeepAliveService.EXTRA_EXIT_OPTIMIZATION);
         }
 
-        // ── Optimization mode kill check (ported from ThemeStore) ─────────────
-        //
+        // ── Optimization mode kill check ──────────────────────────────────────
         // When enabled, exit the main UI process to conserve RAM. The accessibility
         // service keeps running in the :intercept process.
         if (PreferenceUtil.getBoolean("optimization_mode_enabled", false)) {
@@ -110,7 +100,7 @@ public class MainActivity extends AppCompatActivity {
                 android.os.Process.killProcess(android.os.Process.myPid());
                 return; // unreachable, but keeps the compiler happy
             } else {
-                // Accessibility not running — auto-disable so the user can re-set it up.
+                // Accessibility not running — auto-disable so user can re-set it up.
                 PreferenceUtil.setBoolean("optimization_mode_enabled", false);
             }
         }
@@ -132,10 +122,12 @@ public class MainActivity extends AppCompatActivity {
         viewModel = new ViewModelProvider(this).get(MainViewModel.class);
         observeViewModel();
 
-        // Service card → open Accessibility Settings if not running.
+        // FIX: service card click no longer calls ThemeInterceptService.isRunning()
+        // on the main thread (synchronous binder IPC → ANR risk). Use the cached
+        // serviceRunning LiveData value instead.
         MaterialCardView cardService = findViewById(R.id.card_service_status);
         cardService.setOnClickListener(v -> {
-            if (!ThemeInterceptService.isRunning(this)) {
+            if (!Boolean.TRUE.equals(viewModel.serviceRunning.getValue())) {
                 startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
             }
         });
@@ -153,8 +145,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        // Handle EXTRA_EXIT_OPTIMIZATION when the activity is already running
-        // (singleTop launchMode) and the notification button relaunches it.
+        // Handle EXTRA_EXIT_OPTIMIZATION when activity is already running (singleTop).
         if (intent != null && intent.getBooleanExtra(
                 KeepAliveService.EXTRA_EXIT_OPTIMIZATION, false)) {
             PreferenceUtil.setBoolean("optimization_mode_enabled", false);
@@ -183,14 +174,9 @@ public class MainActivity extends AppCompatActivity {
         viewModel.refresh();
         viewModel.retryShizuku();
 
-        // Show setup guide once per session if the service is not yet enabled.
-        if (!setupGuideShownThisSession && !ThemeInterceptService.isRunning(this)) {
-            setupGuideShownThisSession = true;
-            FragmentManager fm = getSupportFragmentManager();
-            if (fm.findFragmentByTag(SetupGuideDialogFragment.TAG) == null) {
-                new SetupGuideDialogFragment().show(fm, SetupGuideDialogFragment.TAG);
-            }
-        }
+        // NOTE: Setup guide is now shown from the serviceRunning observer in
+        // observeViewModel(). This avoids calling ThemeInterceptService.isRunning()
+        // directly on the main thread (binder IPC → ANR risk).
     }
 
     @Override
@@ -219,10 +205,23 @@ public class MainActivity extends AppCompatActivity {
     // ── ViewModel observers ───────────────────────────────────────────────────
 
     private void observeViewModel() {
-        viewModel.serviceRunning.observe(this, running ->
-                tvServiceStatus.setText(running
-                        ? R.string.service_connected
-                        : R.string.service_disconnected));
+        viewModel.serviceRunning.observe(this, running -> {
+            tvServiceStatus.setText(running
+                    ? R.string.service_connected
+                    : R.string.service_disconnected);
+
+            // FIX: setup guide driven by the serviceRunning LiveData (which is set
+            // from a background thread in MainViewModel) instead of calling
+            // ThemeInterceptService.isRunning() on the main thread. The first false
+            // emission after launch triggers the guide exactly once per session.
+            if (!running && !setupGuideShownThisSession) {
+                setupGuideShownThisSession = true;
+                FragmentManager fm = getSupportFragmentManager();
+                if (fm.findFragmentByTag(SetupGuideDialogFragment.TAG) == null) {
+                    new SetupGuideDialogFragment().show(fm, SetupGuideDialogFragment.TAG);
+                }
+            }
+        });
 
         viewModel.shizukuState.observe(this, state -> {
             if (state == null) return;

@@ -36,11 +36,6 @@ import app.hypermtz.util.LogManager;
  * ── Dialog auto-click ─────────────────────────────────────────────────────
  * onAccessibilityEvent() watches ThemeManager windows and clicks known
  * approval button texts automatically.
- *
- * ── Receiver registration ─────────────────────────────────────────────────
- * FIX: Removed pointless pre-API33 reflection. Context.registerReceiver(
- * BroadcastReceiver, IntentFilter) is public API on all versions. The
- * reflection was calling the exact same overload without any benefit.
  */
 public class ThemeInterceptService extends AccessibilityService {
 
@@ -82,7 +77,7 @@ public class ThemeInterceptService extends AccessibilityService {
     };
 
     private boolean receiverRegistered       = false;
-    /** Epoch ms of last ACTION_SUPPRESS_AUTO_CLICK; 0 = never. */
+    /** Epoch ms until which auto-click is suppressed; 0 = never suppressed. */
     private long    suppressAutoClickUntilMs = 0L;
 
     private static final DateTimeFormatter TIME_FMT =
@@ -183,22 +178,17 @@ public class ThemeInterceptService extends AccessibilityService {
         }
 
         // ── Suppress auto-click during HyperMTZ-initiated installs ─────────────
-        // When HyperMTZ launches ThemeManager via ApplyThemeForScreenshot the
-        // normal apply dialog also matches APPROVAL_TEXTS and would be clicked,
-        // killing the install. FileApplyDialogFragment sends ACTION_SUPPRESS_AUTO_CLICK
-        // (a directed broadcast to this service) just before startActivity, which sets
-        // suppressAutoClickUntilMs for INSTALL_SUPPRESS_MS (120 s).
+        // FileApplyDialogFragment sends ACTION_SUPPRESS_AUTO_CLICK just before
+        // startActivity, setting suppressAutoClickUntilMs for 120 s. This prevents
+        // auto-clicking the normal apply dialog while intentional install is running.
         //
-        // WHY BROADCAST, NOT SharedPreferences:
-        // This service runs in ":intercept" — a separate process. The main process
-        // and :intercept each hold their own in-memory SharedPreferences cache.
-        // A write from the main process is never reflected in :intercept's cache.
-        // A directed broadcast is the correct, reliable cross-process signal.
-        //
+        // WHY BROADCAST, NOT SharedPreferences: this service runs in ":intercept"
+        // — a separate process. Each process holds its own in-memory SP cache.
+        // A write from the main process is never seen in :intercept's cache.
         // The CHECK_TIME_UP broadcast intercept (abortBroadcast) is completely
         // unaffected — it runs in the BroadcastReceiver, not here.
         if (System.currentTimeMillis() < suppressAutoClickUntilMs) {
-            Log.d(TAG, "Auto-click suppressed — HyperMTZ install in progress ("
+            Log.d(TAG, "Auto-click suppressed — install in progress ("
                     + (suppressAutoClickUntilMs - System.currentTimeMillis()) / 1000 + "s left)");
             return;
         }
@@ -222,17 +212,37 @@ public class ThemeInterceptService extends AccessibilityService {
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
+    /**
+     * Searches for a clickable approval button in the node tree and clicks it.
+     *
+     * FIX: findAccessibilityNodeInfosByText() returns a List of AccessibilityNodeInfo
+     * objects that ALL must be recycled after use. Previously only the matched node
+     * was used; the rest were silently leaked on every ThemeManager event.
+     *
+     * @return true if a button was successfully clicked
+     */
     private boolean tryClickApprovalButton(AccessibilityNodeInfo root) {
         for (String text : APPROVAL_TEXTS) {
             List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(text);
-            if (nodes == null) continue;
-            for (AccessibilityNodeInfo node : nodes) {
-                if (node != null && node.isClickable() && node.isEnabled() && node.isVisibleToUser()) {
-                    boolean clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                    Log.d(TAG, "performAction(CLICK) on \"" + text + "\": " + clicked);
-                    return clicked;
+            if (nodes == null || nodes.isEmpty()) continue;
+
+            boolean clicked = false;
+            try {
+                for (AccessibilityNodeInfo node : nodes) {
+                    if (node == null) continue;
+                    if (!clicked
+                            && node.isClickable()
+                            && node.isEnabled()
+                            && node.isVisibleToUser()) {
+                        clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                        Log.d(TAG, "performAction(CLICK) on \"" + text + "\": " + clicked);
+                    }
+                    node.recycle();  // recycle every node, whether clicked or not
                 }
+            } catch (Exception e) {
+                Log.e(TAG, "tryClickApprovalButton failed for text \"" + text + "\"", e);
             }
+            if (clicked) return true;
         }
         return false;
     }
@@ -252,13 +262,13 @@ public class ThemeInterceptService extends AccessibilityService {
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_THEME_CHECK);
         filter.addAction(ACTION_SUPPRESS_AUTO_CLICK);
-        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        // FIX: ACTION_SCREEN_OFF removed — it was registered but never handled,
+        // waking the :intercept process on every screen-off for no reason.
         filter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY); // 1000
 
-        // ContextCompat.registerReceiver provides the RECEIVER_NOT_EXPORTED flag on all
-        // API levels, satisfying the UnspecifiedRegisterReceiverFlag lint rule on API 26+.
-        // MIUI ThemeManager is a privileged system app — it can still deliver broadcasts
-        // to NOT_EXPORTED receivers, so this is both correct and secure.
+        // ContextCompat.registerReceiver handles RECEIVER_NOT_EXPORTED on all API
+        // levels, satisfying the UnspecifiedRegisterReceiverFlag lint rule.
+        // MIUI ThemeManager is privileged — it can deliver to NOT_EXPORTED receivers.
         ContextCompat.registerReceiver(this, themeCheckReceiver, filter,
                 ContextCompat.RECEIVER_NOT_EXPORTED);
 

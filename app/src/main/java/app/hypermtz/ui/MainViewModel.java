@@ -3,6 +3,7 @@ package app.hypermtz.ui;
 import android.app.Application;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Environment;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -17,6 +18,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
 import app.hypermtz.IPrivilegedService;
 import app.hypermtz.R;
 import app.hypermtz.service.ThemeInterceptService;
@@ -25,18 +27,9 @@ import app.hypermtz.util.ShizukuServiceManager;
 
 /**
  * Survives configuration changes and owns all mutable app state.
- *
- * Fixes vs original:
- *  1. isRunning() (binder IPC) moved from main thread to ioExecutor — avoids
- *     UI jank on every refresh() / onResume call.
- *  2. Added shizukuState LiveData (ShizukuState enum) for granular UI feedback.
- *  3. Implements ShizukuServiceManager.Callback.onStateChanged() so the Shizuku
- *     card can show UNAVAILABLE / PERMISSION_NEEDED / CONNECTING / CONNECTED.
  */
 public class MainViewModel extends AndroidViewModel
         implements ShizukuServiceManager.Callback {
-
-    private static final String TAG = "MainViewModel";
 
     private static final DateTimeFormatter TIME_FMT =
             DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss", Locale.getDefault());
@@ -58,7 +51,7 @@ public class MainViewModel extends AndroidViewModel
 
     public final LiveData<Boolean>                             serviceRunning   = _serviceRunning;
     public final LiveData<Boolean>                             shizukuConnected = _shizukuConnected;
-    /** Granular Shizuku state for detailed UI (UNAVAILABLE/PERMISSION_NEEDED/CONNECTING/CONNECTED). */
+    /** Granular Shizuku state (UNAVAILABLE / PERMISSION_NEEDED / CONNECTING / CONNECTED). */
     public final LiveData<ShizukuServiceManager.ShizukuState> shizukuState     = _shizukuState;
     public final LiveData<String>                              connectedTime    = _connectedTime;
     public final LiveData<String>                              interceptTime    = _interceptTime;
@@ -148,11 +141,9 @@ public class MainViewModel extends AndroidViewModel
 
     /**
      * Re-reads all state from ThemeInterceptService and SharedPreferences.
-     * FIX: isRunning() (binder IPC) now runs on ioExecutor instead of the main thread.
+     * isRunning() (binder IPC) runs on ioExecutor — not the main thread.
      */
     public void refresh() {
-        // FIX: moved to background thread — getEnabledAccessibilityServiceList() does
-        // a synchronous binder IPC that can block the main thread for 50-100 ms.
         ioExecutor.submit(() -> {
             boolean running = ThemeInterceptService.isRunning(getApplication());
             _serviceRunning.postValue(running);
@@ -160,7 +151,6 @@ public class MainViewModel extends AndroidViewModel
         refreshTimestamps();
         refreshThemeStatus();
     }
-
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
@@ -180,13 +170,15 @@ public class MainViewModel extends AndroidViewModel
     }
 
     private String computeThemeStatus() {
-        // Check paths in priority order:
-        // 1. ZWS/ThemeStore method → .../files/theme/安装主题.mtz  (exact ThemeStore filename)
-        // 2. Legacy snapshot path  → .../files/snapshot/  (directory mtime)
-        // 3. MIUI 12+ system dir  → /data/system/theme/compatibility-v12/
+        // FIX: use Environment.getExternalStorageDirectory() — not hardcoded /sdcard/.
+        // FIX: first candidate updated to files/snapshot/snapshot.mtz — the actual
+        //      install destination used by FileApplyDialogFragment (both ZWS and
+        //      Shizuku strategies write here). The old files/theme/安装主题.mtz path
+        //      is no longer written and would always return "not installed".
+        String extRoot = Environment.getExternalStorageDirectory().getPath();
         File[] candidates = {
-            new File("/sdcard/Android/data/com.android.thememanager/files/theme/安装主题.mtz"),
-            new File("/sdcard/Android/data/com.android.thememanager/files/snapshot"),
+            new File(extRoot + "/Android/data/com.android.thememanager/files/snapshot/snapshot.mtz"),
+            new File(extRoot + "/Android/data/com.android.thememanager/files/snapshot"),
             new File("/data/system/theme/compatibility-v12"),
         };
         for (File f : candidates) {

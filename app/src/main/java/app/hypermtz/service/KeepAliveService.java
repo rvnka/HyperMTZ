@@ -91,12 +91,8 @@ public class KeepAliveService extends android.app.Service {
     public void onDestroy() {
         Log.d(TAG, "onDestroy");
         if (isForeground) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_REMOVE);
-            } else {
-                //noinspection deprecation
-                stopForeground(true);
-            }
+            // minSdk=28 ≥ API 24 (N) — STOP_FOREGROUND_REMOVE is always available.
+            stopForeground(STOP_FOREGROUND_REMOVE);
             isForeground = false;
         }
         super.onDestroy();
@@ -226,7 +222,7 @@ public class KeepAliveService extends android.app.Service {
     }
 
     private void createChannelIfNeeded() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        // minSdk=28 ≥ API 26 (O) — notification channels are always required.
         NotificationManager nm = getSystemService(NotificationManager.class);
         if (nm == null || nm.getNotificationChannel(CHANNEL_ID) != null) return;
 
@@ -242,10 +238,7 @@ public class KeepAliveService extends android.app.Service {
     }
 
     private static void startCompat(Context context, Intent intent) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(intent);
-        } else {
-            context.startService(intent);
-        }
+        // minSdk=28 ≥ API 26 (O) — startForegroundService is always available.
+        context.startForegroundService(intent);
     }
 }

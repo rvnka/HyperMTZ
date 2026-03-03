@@ -1,5 +1,6 @@
 package app.hypermtz.ui.dialog;
 
+import android.app.Activity;
 import android.app.Dialog;
 import android.os.Bundle;
 import android.os.RemoteException;
@@ -51,9 +52,14 @@ public class CommandDialogFragment extends DialogFragment {
         TextView tvTime   = view.findViewById(R.id.tv_command_timestamp);
         TextView tvOutput = view.findViewById(R.id.tv_command_output);
 
-        // Obtain the shared ViewModel so state survives dialog recreation.
         MainViewModel viewModel = new ViewModelProvider(requireActivity())
                 .get(MainViewModel.class);
+
+        // FIX: capture the fallback string on the main thread now.
+        // getString() must not be called on a background thread — the fragment
+        // may be detached by the time the executor runs, causing an
+        // IllegalStateException. noOutput is constant so it is safe to capture here.
+        final String noOutput = getString(R.string.command_no_output);
 
         Runnable runCommand = () -> {
             String raw = etInput.getText().toString().trim();
@@ -71,20 +77,41 @@ public class CommandDialogFragment extends DialogFragment {
             tvTime.setText("");
 
             executor.submit(() -> {
-                String result;
+                // Execute the command and collect output or error message.
+                // NOTE: error message is stored separately so it can be formatted
+                // on the main thread using getString() safely.
+                String output    = null;
+                String errorMsg  = null;
                 try {
-                    result = svc.executeWithOutput(MAX_LINES, TIMEOUT_MS, true, args);
+                    output = svc.executeWithOutput(MAX_LINES, TIMEOUT_MS, true, args);
                 } catch (RemoteException e) {
-                    result = getString(R.string.command_error, e.getMessage());
+                    errorMsg = e.getMessage();
                 }
-                String ts     = TIME_FMT.format(LocalDateTime.now());
-                String output = result != null ? result : getString(R.string.command_no_output);
-                if (!isAdded()) return;
-                requireActivity().runOnUiThread(() -> {
-                    if (!isAdded()) return;
+
+                final String finalOutput  = output;
+                final String finalError   = errorMsg;
+                final String ts           = TIME_FMT.format(LocalDateTime.now());
+
+                // FIX: use getActivity() + null check instead of isAdded() +
+                // requireActivity(). There is a race window between isAdded()
+                // returning true and requireActivity() executing — the fragment
+                // can be detached between the two calls. getActivity() is atomic.
+                Activity activity = getActivity();
+                if (activity == null || activity.isFinishing()) return;
+
+                activity.runOnUiThread(() -> {
+                    // Re-check after crossing the thread boundary.
+                    if (getActivity() == null) return;
+
                     tvStatus.setText(R.string.command_done);
                     tvTime.setText(ts);
-                    tvOutput.setText(output);
+
+                    if (finalError != null) {
+                        // getString() is safe here — we are back on the main thread.
+                        tvOutput.setText(getString(R.string.command_error, finalError));
+                    } else {
+                        tvOutput.setText(finalOutput != null ? finalOutput : noOutput);
+                    }
                 });
             });
         };
