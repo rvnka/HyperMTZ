@@ -105,6 +105,10 @@ public class PrivilegedService extends IPrivilegedService.Stub {
                 out.write(buffer, 0, bytesRead);
             }
             out.flush();
+            // fdatasync() ensures data is physically written before the caller
+            // launches ThemeManager. Without this, the kernel buffer may not
+            // be flushed, causing ThemeManager to read a partial/empty file.
+            try { out.getFD().sync(); } catch (Exception ignored) {}
             // Make the copied file world-readable so ThemeManager (which runs as its own
             // UID) can read it even though this service runs as shell (ADB) or root.
             //noinspection ResultOfMethodCallIgnored
