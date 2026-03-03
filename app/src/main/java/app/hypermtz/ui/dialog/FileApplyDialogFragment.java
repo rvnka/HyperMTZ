@@ -348,6 +348,12 @@ public class FileApplyDialogFragment extends DialogFragment {
                 int n;
                 while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
                 out.flush();
+                // *** FIX: fdatasync before handing path to Shizuku (cross-process read) ***
+                // flush() only clears Java's buffer into the OS page cache.
+                // The Shizuku process opens this file via a separate process context.
+                // Without sync(), the OS may not have committed all dirty pages, and the
+                // cross-process read may see a truncated or zero-length file.
+                try { out.getFD().sync(); } catch (Exception ignored) {}
             }
 
             return (outFile.exists() && outFile.length() > 0) ? outFile : null;
@@ -393,14 +399,22 @@ public class FileApplyDialogFragment extends DialogFragment {
         // time to be delivered to the :intercept process before ThemeManager's
         // first lifecycle callbacks fire (which is when CHECK_TIME_UP is sent).
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
-            boolean isSnapshotPath = themePath.equals(SNAPSHOT_PATH);
-
-            // Primary: ThemeStore method (no theme_apply_flags)
-            if (!isSnapshotPath && tryLaunch(appContext, themePath, "ThemeEditor", false)) {
+            // *** FIX: Always try ThemeEditor first, for ANY path (including snapshot) ***
+            //
+            // The old code skipped ThemeEditor when isSnapshotPath == true, forcing the
+            // com.miui.themestore path. On many MIUI/HyperOS builds, com.miui.themestore
+            // triggers a stricter UID check inside ThemeManager: if Binder.getCallingUid()
+            // does not match the declared api_called_from package, ThemeManager rejects the
+            // install. ThemeEditor does NOT perform this UID check on most MIUI versions.
+            //
+            // tryLaunch() already catches all exceptions and returns false on failure, so
+            // attempting ThemeEditor for the snapshot path is completely safe — if it
+            // doesn't work on a specific ROM it falls through to com.miui.themestore.
+            if (tryLaunch(appContext, themePath, "ThemeEditor", false)) {
                 Log.d(TAG_LOG, "Launched via ThemeEditor");
                 return;
             }
-            // Fallback: snapshot path / miuithemestore method
+            // Fallback: miuithemestore method (snapshot path or older MIUI)
             if (tryLaunch(appContext, themePath, "com.miui.themestore", true)) {
                 Log.d(TAG_LOG, "Launched via com.miui.themestore");
                 return;

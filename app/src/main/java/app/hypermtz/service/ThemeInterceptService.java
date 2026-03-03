@@ -287,12 +287,27 @@ public class ThemeInterceptService extends AccessibilityService {
         filter.addAction(Intent.ACTION_SCREEN_OFF);
         filter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY); // 1000
 
-        // ContextCompat.registerReceiver provides the RECEIVER_NOT_EXPORTED flag on all
-        // API levels, satisfying the UnspecifiedRegisterReceiverFlag lint rule on API 26+.
-        // MIUI ThemeManager is a privileged system app — it can still deliver broadcasts
-        // to NOT_EXPORTED receivers, so this is both correct and secure.
+        // *** CRITICAL FIX: Must use RECEIVER_EXPORTED ***
+        //
+        // RECEIVER_NOT_EXPORTED was the ROOT CAUSE of "解压主题包失败".
+        //
+        // ThemeManager (com.android.thememanager) has a DIFFERENT UID from HyperMTZ.
+        // RECEIVER_NOT_EXPORTED blocks broadcasts from any process with a different UID.
+        // Result: CHECK_TIME_UP sent by ThemeManager NEVER reaches this receiver.
+        //
+        // Without interception, CHECK_TIME_UP propagates to the system License Manager
+        // receiver which responds "expired". ThemeManager reads that result and refuses
+        // to decompress the .mtz — reporting "解压主题包失败" even though the file is intact.
+        //
+        // The original pre-API33 code used reflection to call registerReceiver() without
+        // any flag, which defaulted to EXPORTED behaviour. Switching to NOT_EXPORTED
+        // silently broke the entire interception mechanism.
+        //
+        // SECURITY: ACTION_SUPPRESS_AUTO_CLICK only toggles a 120-second auto-click
+        // suppression window — not sensitive. CHECK_TIME_UP and ACTION_SCREEN_OFF are
+        // sent by system/ThemeManager and are harmless to expose.
         ContextCompat.registerReceiver(this, themeCheckReceiver, filter,
-                ContextCompat.RECEIVER_NOT_EXPORTED);
+                ContextCompat.RECEIVER_EXPORTED);
 
         receiverRegistered = true;
         Log.d(TAG, "BroadcastReceiver registered, priority=" + filter.getPriority());

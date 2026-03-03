@@ -99,9 +99,14 @@ public class PrivilegedService extends IPrivilegedService.Stub {
         }
         try (FileInputStream in = new FileInputStream(source);
              FileOutputStream out = new FileOutputStream(destination)) {
-            byte[] buffer = new byte[8192];
+            byte[] buffer = new byte[65536]; // match copyUriToCache buffer size
             int bytesRead;
-            while ((bytesRead = in.read(buffer)) > 0) {
+            // *** FIX: use != -1, not > 0 ***
+            // FileInputStream.read() CAN return 0 on some Android kernel/FS paths
+            // (e.g. under heavy I/O or certain ext4 edge cases). Using > 0 causes
+            // the loop to exit early, producing a truncated destination file.
+            // ThemeManager then opens a partial ZIP → "解压主题包失败".
+            while ((bytesRead = in.read(buffer)) != -1) {
                 out.write(buffer, 0, bytesRead);
             }
             out.flush();
